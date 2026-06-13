@@ -1,8 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
-use mimisbrunnr::{FilesBackend, MemoryBackend, MemoryQuery, MemoryTier, StoreMemory};
+#[cfg(feature = "qdrant")]
+use std::env;
+
+use brunnr_core::{MemoryBackendKind, MemoryConfig};
+use mimisbrunnr::{
+    FilesBackend, MemoryBackend, MemoryQuery, MemoryTier, SqliteVecVectorStore,
+    SqliteVecVectorStoreConfig, StoreMemory, VectorMemoryBackend, VectorMemoryConfig,
+};
 use rmcp::{
     handler::server::{
         router::tool::ToolRouter,
@@ -15,18 +22,32 @@ use rmcp::{
 };
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone)]
+#[cfg(feature = "qdrant")]
+use mimisbrunnr::{QdrantVectorStore, QdrantVectorStoreConfig};
+
+const TOOL_INSTRUCTIONS: &str =
+    "ALWAYS search the project memory before non-trivial work; store durable, reusable learnings.";
+
+#[derive(Clone)]
 pub struct MemoryServer {
-    backend: FilesBackend,
+    backend: Arc<dyn MemoryBackend>,
     tool_router: ToolRouter<Self>,
 }
 
 impl MemoryServer {
     pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self::with_backend(Arc::new(FilesBackend::new(root)))
+    }
+
+    pub fn with_backend(backend: Arc<dyn MemoryBackend>) -> Self {
         Self {
-            backend: FilesBackend::new(root),
+            backend,
             tool_router: Self::tool_router(),
         }
+    }
+
+    pub fn from_config(config: &MemoryConfig) -> anyhow::Result<Self> {
+        Ok(Self::with_backend(open_memory_backend(config)?))
     }
 }
 
@@ -68,7 +89,7 @@ pub struct StoreResponse {
 impl MemoryServer {
     #[tool(
         name = "memory.find",
-        description = "Find durable memories by keyword query."
+        description = "Find durable project memories by query. ALWAYS search the project memory before non-trivial work."
     )]
     pub async fn memory_find(
         &self,
@@ -96,7 +117,7 @@ impl MemoryServer {
 
     #[tool(
         name = "memory.store",
-        description = "Store a durable memory in the files backend."
+        description = "Store durable, reusable learnings in project memory."
     )]
     pub async fn memory_store(
         &self,
@@ -110,6 +131,7 @@ impl MemoryServer {
                 metadata: Default::default(),
                 tier: MemoryTier::L1Atom,
                 node_id: request.node_id,
+                created_at: None,
             })
             .await
             .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
@@ -123,8 +145,11 @@ impl MemoryServer {
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for MemoryServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_instructions("Brunnr memory server exposing memory.find and memory.store.")
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
+            format!(
+                "Brunnr memory server exposing memory.find and memory.store. {TOOL_INSTRUCTIONS}"
+            ),
+        )
     }
 }
 
@@ -132,4 +157,63 @@ pub async fn run_stdio(root: impl Into<PathBuf>) -> anyhow::Result<()> {
     let server = MemoryServer::new(root);
     server.serve(stdio()).await?.waiting().await?;
     Ok(())
+}
+
+pub async fn run_stdio_with_config(config: &MemoryConfig) -> anyhow::Result<()> {
+    let server = MemoryServer::from_config(config)?;
+    server.serve(stdio()).await?.waiting().await?;
+    Ok(())
+}
+
+pub fn open_memory_backend(config: &MemoryConfig) -> anyhow::Result<Arc<dyn MemoryBackend>> {
+    match config.backend {
+        MemoryBackendKind::Files => Ok(Arc::new(FilesBackend::new(&config.root))),
+        MemoryBackendKind::SqliteVec => {
+            let store = SqliteVecVectorStore::open(SqliteVecVectorStoreConfig::new(sqlite_path(
+                &config.root,
+            )))?;
+            Ok(Arc::new(VectorMemoryBackend::new(
+                store,
+                VectorMemoryConfig::new(&config.collection),
+            )?))
+        }
+        MemoryBackendKind::Qdrant => open_qdrant_backend(config),
+        MemoryBackendKind::TencentDb => anyhow::bail!("TencentDB backend is not available yet"),
+    }
+}
+
+#[cfg(feature = "qdrant")]
+fn open_qdrant_backend(config: &MemoryConfig) -> anyhow::Result<Arc<dyn MemoryBackend>> {
+    let url = config
+        .qdrant_url
+        .clone()
+        .or_else(|| env::var("QDRANT_URL").ok())
+        .ok_or_else(|| anyhow::anyhow!("Qdrant backend requires qdrant_url or QDRANT_URL"))?;
+    let mut vector_config = QdrantVectorStoreConfig::new(url);
+    if let Some(env_name) = &config.qdrant_api_key_env {
+        vector_config.api_key = env::var(env_name).ok();
+    }
+    let store = QdrantVectorStore::connect(vector_config)?;
+    Ok(Arc::new(VectorMemoryBackend::new(
+        store,
+        VectorMemoryConfig::new(&config.collection),
+    )?))
+}
+
+#[cfg(not(feature = "qdrant"))]
+fn open_qdrant_backend(_config: &MemoryConfig) -> anyhow::Result<Arc<dyn MemoryBackend>> {
+    anyhow::bail!("Qdrant backend requires building brunnr-mcp with the qdrant feature")
+}
+
+fn sqlite_path(root: &str) -> PathBuf {
+    let path = PathBuf::from(root);
+    if path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| matches!(extension, "db" | "sqlite" | "sqlite3"))
+    {
+        path
+    } else {
+        path.join("memory.sqlite3")
+    }
 }

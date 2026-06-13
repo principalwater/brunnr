@@ -9,12 +9,11 @@ use std::{
 use chrono::{DateTime, Utc};
 use futures_util::{future::BoxFuture, FutureExt};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use tokio::fs;
 
 use crate::{
-    MemoryBackend, MemoryError, MemoryId, MemoryQuery, MemoryRecord, MemoryResult, MemoryTier,
-    SearchHit, SearchSource, StoreMemory,
+    identity::stable_memory_id, MemoryBackend, MemoryError, MemoryId, MemoryQuery, MemoryRecord,
+    MemoryResult, MemoryTier, SearchHit, SearchSource, StoreMemory,
 };
 
 #[derive(Debug, Clone)]
@@ -79,14 +78,14 @@ impl MemoryBackend for FilesBackend {
 
     fn store(&self, memory: StoreMemory) -> BoxFuture<'_, MemoryResult<MemoryRecord>> {
         async move {
-            let id = stable_id(&memory);
+            let id = stable_memory_id(&memory);
             let existing_path = find_existing_record_path(&self.memory_dir(), &id)?;
             if let Some(path) = existing_path {
                 let text = fs::read_to_string(path).await?;
                 return parse_record(&text);
             }
 
-            let now = Utc::now();
+            let now = memory.created_at.unwrap_or_else(Utc::now);
             let date_tag = now.format("%Y-%m-%d").to_string();
             let node_id = memory.node_id.unwrap_or_else(|| format!("node:{id}"));
             let record = MemoryRecord {
@@ -161,7 +160,7 @@ fn render_record(record: &MemoryRecord) -> MemoryResult<String> {
     ))
 }
 
-fn parse_record(text: &str) -> MemoryResult<MemoryRecord> {
+pub(crate) fn parse_record(text: &str) -> MemoryResult<MemoryRecord> {
     let rest = text
         .strip_prefix("+++\n")
         .ok_or_else(|| MemoryError::InvalidFile("missing TOML front matter".to_string()))?;
@@ -185,23 +184,6 @@ fn parse_record(text: &str) -> MemoryResult<MemoryRecord> {
         tier: header.tier,
         created_at: header.created_at,
     })
-}
-
-fn stable_id(memory: &StoreMemory) -> MemoryId {
-    let mut hasher = Sha256::new();
-    hasher.update(memory.content.as_bytes());
-    hasher.update(format!("{:?}", memory.tier).as_bytes());
-    for tag in &memory.tags {
-        hasher.update(tag.as_bytes());
-    }
-    for (key, value) in &memory.metadata {
-        hasher.update(key.as_bytes());
-        hasher.update(value.as_bytes());
-    }
-    if let Some(node_id) = &memory.node_id {
-        hasher.update(node_id.as_bytes());
-    }
-    MemoryId::new(format!("{:x}", hasher.finalize()))
 }
 
 fn find_existing_record_path(root: &Path, id: &MemoryId) -> MemoryResult<Option<PathBuf>> {

@@ -16,6 +16,61 @@ pub type AgentEventStream = Pin<Box<dyn Stream<Item = AgentResult<AgentEvent>> +
 ///
 /// Implementations own process/session details. The core orchestration layer only relies on this
 /// narrow spawn/send/stream/capabilities contract, so new agents do not require core changes.
+///
+/// ```
+/// # use futures_util::{future::BoxFuture, FutureExt, stream};
+/// # use brunnr_core::{
+/// #     Agent, AgentCapabilities, AgentEvent, AgentEventStream, AgentMessage, AgentResponse,
+/// #     AgentResult, AgentSession, Role, SpawnRequest,
+/// # };
+/// struct EchoAgent;
+///
+/// impl Agent for EchoAgent {
+///     fn spawn(&self, request: SpawnRequest) -> BoxFuture<'_, AgentResult<AgentSession>> {
+///         async move {
+///             Ok(AgentSession {
+///                 id: "session-1".to_string(),
+///                 role: request.role,
+///                 agent: request.agent,
+///             })
+///         }
+///         .boxed()
+///     }
+///
+///     fn send(
+///         &self,
+///         _session: &AgentSession,
+///         message: AgentMessage,
+///     ) -> BoxFuture<'_, AgentResult<AgentResponse>> {
+///         async move { Ok(AgentResponse { content: message.content }) }.boxed()
+///     }
+///
+///     fn stream(
+///         &self,
+///         _session: &AgentSession,
+///         message: AgentMessage,
+///     ) -> BoxFuture<'_, AgentResult<AgentEventStream>> {
+///         async move {
+///             Ok(Box::pin(stream::iter([
+///                 Ok(AgentEvent::Text(message.content)),
+///                 Ok(AgentEvent::Done),
+///             ])) as AgentEventStream)
+///         }
+///         .boxed()
+///     }
+///
+///     fn capabilities(&self) -> AgentCapabilities {
+///         AgentCapabilities {
+///             streaming: true,
+///             tools: false,
+///             mcp: true,
+///         }
+///     }
+/// }
+///
+/// let agent = EchoAgent;
+/// let _capabilities = agent.capabilities();
+/// ```
 pub trait Agent: Send + Sync {
     fn spawn(&self, request: SpawnRequest) -> BoxFuture<'_, AgentResult<AgentSession>>;
 

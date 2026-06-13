@@ -20,6 +20,8 @@ pub enum MemoryError {
     Payload(#[from] serde_json::Error),
     #[error("invalid memory file: {0}")]
     InvalidFile(String),
+    #[error("database error: {0}")]
+    Database(String),
     #[error("backend is not available in this build: {0}")]
     BackendUnavailable(String),
 }
@@ -87,10 +89,15 @@ impl MemoryRecord {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoreMemory {
     pub content: String,
+    #[serde(default)]
     pub tags: Vec<String>,
+    #[serde(default)]
     pub metadata: BTreeMap<String, String>,
     pub tier: MemoryTier,
+    #[serde(default)]
     pub node_id: Option<String>,
+    #[serde(default)]
+    pub created_at: Option<DateTime<Utc>>,
 }
 
 impl StoreMemory {
@@ -101,6 +108,7 @@ impl StoreMemory {
             metadata: BTreeMap::new(),
             tier: MemoryTier::L1Atom,
             node_id: None,
+            created_at: None,
         }
     }
 }

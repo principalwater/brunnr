@@ -4,3 +4,6 @@
 brunnr-build = ["build", "--workspace", "--all-features"]
 brunnr-clippy = ["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]
 brunnr-test = ["test", "--workspace", "--all-features"]
+
+[env]
+CFLAGS = { value = "-DSQLITE_VEC_ENABLE_DISKANN=0 -DSQLITE_VEC_ENABLE_RESCORE=0", force = false }

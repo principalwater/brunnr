@@ -26,6 +26,12 @@ pub enum MemoryBackendKind {
 pub struct MemoryConfig {
     pub backend: MemoryBackendKind,
     pub root: String,
+    #[serde(default = "default_memory_collection")]
+    pub collection: String,
+    #[serde(default)]
+    pub qdrant_url: Option<String>,
+    #[serde(default)]
+    pub qdrant_api_key_env: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,6 +55,9 @@ impl BrunnrConfig {
             memory: MemoryConfig {
                 backend: MemoryBackendKind::Files,
                 root: root.into(),
+                collection: default_memory_collection(),
+                qdrant_url: None,
+                qdrant_api_key_env: None,
             },
             agents,
         }
@@ -61,4 +70,8 @@ impl BrunnrConfig {
     pub fn to_toml(&self) -> Result<String, toml::ser::Error> {
         toml::to_string_pretty(self)
     }
+}
+
+fn default_memory_collection() -> String {
+    "brunnr-memory".to_string()
 }

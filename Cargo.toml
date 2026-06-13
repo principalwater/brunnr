@@ -29,13 +29,16 @@ futures-core = "0.3"
 futures-util = "0.3"
 qdrant-client = { version = "1.18.0", default-features = false, features = ["serde"] }
 rmcp = "1.7.0"
+rusqlite = { version = "0.40.1", features = ["bundled"] }
 schemars = "1.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
+sqlite-vec = "0.1.10-alpha.4"
 thiserror = "2.0"
 tokio = { version = "1.48", features = ["fs", "io-std", "macros", "process", "rt-multi-thread", "signal"] }
 toml = "0.8"
+toml_edit = "0.22"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

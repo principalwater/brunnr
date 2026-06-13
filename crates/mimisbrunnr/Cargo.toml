@@ -12,19 +12,29 @@ chrono.workspace = true
 fastembed = { workspace = true, optional = true }
 futures-util.workspace = true
 qdrant-client = { workspace = true, optional = true }
+rusqlite = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+sqlite-vec = { workspace = true, optional = true }
 thiserror.workspace = true
 tokio.workspace = true
 toml.workspace = true
 
 [features]
-default = []
-qdrant = ["dep:fastembed", "dep:qdrant-client"]
+default = ["sqlite-vec"]
+qdrant = ["vector", "dep:qdrant-client"]
+sqlite-vec = ["vector", "dep:rusqlite", "dep:sqlite-vec"]
+vector = ["dep:fastembed"]
 
 [dev-dependencies]
 brunnr-test-support.workspace = true
 
-[lints]
-workspace = true
+
+[lints.rust]
+unsafe_code = "allow"
+
+[lints.clippy]
+derive_partial_eq_without_eq = "warn"
+large_futures = "warn"
+manual_let_else = "warn"

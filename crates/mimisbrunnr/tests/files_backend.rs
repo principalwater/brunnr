@@ -18,6 +18,7 @@ async fn files_backend_stores_date_tagged_markdown_and_finds_it() {
             metadata: BTreeMap::new(),
             tier: MemoryTier::L1Atom,
             node_id: Some("node:files".to_string()),
+            created_at: None,
         })
         .await
         .expect("store should succeed");
@@ -56,6 +57,7 @@ async fn files_backend_drills_down_by_node_id() {
             metadata: BTreeMap::new(),
             tier: MemoryTier::L0Raw,
             node_id: Some("node:evidence".to_string()),
+            created_at: None,
         })
         .await
         .expect("store should succeed");
