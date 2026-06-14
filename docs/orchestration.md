@@ -64,6 +64,48 @@ A **single mutation authority** serializes task-state changes (anti-race; from S
 blackboard is the task DAG (Þing) plus long-term memory (Mímisbrunnr); each agent reads only the
 slice it needs via `memory.find`, never the whole history.
 
+## Coordination & communication primitives
+
+Even with blackboard coordination, the records exchanged need a defined shape. Brunnr standardizes
+a small **event envelope** (JSON, LLM-parseable) so any agent adapter and the observability layer
+speak the same language — inspired by agent communication languages (FIPA ACL) but minimal:
+
+```json
+{
+  "id": "evt-…", "correlation_id": "erindi-…", "timestamp": "2026-06-14T00:00:00Z",
+  "sender": {"role": "master", "agent_id": "…"}, "protocol_version": "0.1",
+  "type": "TASK_ANNOUNCED | TASK_CLAIMED | RESULT | VERDICT | BLOCKED | STATUS | ERROR",
+  "payload": { }
+}
+```
+
+`correlation_id` links a result/verdict back to its task (no need to replay history). Events are
+written to the blackboard (Þing/memory) and to the run log.
+
+**Coordination mechanisms** (the orchestrator is a centralized coordinator by default — simplest,
+one authority):
+
+- **Task allocation** — capability/role routing via the [Router](#router--agent-routing-and-tool-selection-token-saver)
+  by default; an optional **Contract-Net** mode (announce → workers bid → award) for capability
+  markets.
+- **Synchronization** — the task DAG encodes dependencies; a **barrier** (a synthesis task) waits
+  for all parallel sub-tasks before proceeding; claim/complete are events.
+- **Resource management** — shared resources (model rate limits, API keys, DB connections) are
+  governed by **quotas/scheduling**: per-agent/per-user token budgets and rate limits, connection
+  pooling funneled through `brunnrd` (see [concurrency.md](concurrency.md)).
+- **Consensus (optional)** — debate/critique or simple voting among multiple critics when one
+  judge is not enough.
+
+**Worker workspace isolation (required for parallel workers on one project).** Each worker runs in
+an **isolated workspace** (a git worktree or scratch directory) so concurrent workers on the same
+repo do not clobber each other's files; results are integrated only through the judge gate. This is
+the file-level complement to the memory concurrency model, and it composes with the optional
+`hvergelmir` Docker sandbox.
+
+**Observability.** Every event carries `id`/`correlation_id`/`timestamp`/`sender`; the orchestrator
+emits structured run logs and per-agent/session token accounting, so multi-agent runs are
+debuggable and the evaluator/judge has evidence to gate on.
+
 ## Topologies (config, hybrids allowed)
 
 Brunnr supports the standard collaborative architectures; pick per project, compose freely:
@@ -118,5 +160,10 @@ caching. Orchestration never becomes the bottleneck the literature warns about.
   https://arxiv.org/abs/2305.10601
 - Patil et al., *Gorilla* (2023) — scaling tool invocation. https://arxiv.org/abs/2305.15334
 - Wang et al., *A Survey on LLM-based Autonomous Agents* (2023). https://arxiv.org/abs/2308.11432
+- Smith, *The Contract Net Protocol* (IEEE TC, 1980) — negotiated task allocation.
+  https://doi.org/10.1109/TC.1980.1675516
+- FIPA ACL — agent communication language / message acts. http://www.fipa.org/specs/fipa00001/
+- Wu et al., *AutoGen* (2023) — multi-agent conversation/coordination patterns.
+  https://arxiv.org/abs/2308.08155
 - ApX, *Agentic LLM Systems & Memory Architectures*, Chapters 4–5 — planning, tools, MAS.
   https://apxml.com/courses/agentic-llm-memory-architectures
