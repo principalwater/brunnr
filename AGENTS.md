@@ -4,6 +4,15 @@
 
 These instructions apply to the entire repository.
 
+## Memory tool (MCP)
+
+The memory MCP server is **`brunnr-memory`**; its tools are **`memory.find`** and
+**`memory.store`** (plus `memory.anchor.get/set` and `tools.find`). Do **not** call
+`qdrant-find` / `qdrant-store` — those name a different/removed Python `mcp-server-qdrant` server,
+not Brunnr. If a session still lists an old `qdrant-memory` server, it is stale: restart the
+session so it loads the current config, then use `brunnr-memory` / `memory.find`. The Qdrant
+backend requires an API key (supplied by Brunnr's config/env); keyless clients get `401`.
+
 ## Onboarding (humans and agents)
 
 To bring Brunnr up — deploy it and connect a project per the operator's requested config —
