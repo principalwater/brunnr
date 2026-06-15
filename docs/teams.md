@@ -63,9 +63,15 @@ validation. Report findings with severity ratings. (appended to the teammate's s
   the repo, not in the vector store. (Memory *records* and their tenancy metadata do live in the
   vector store payload, as usual — see [memory.md](memory.md). Definitions are not search objects.)
 - Brunnr also **reads existing `.claude/agents/*.md`** definitions, so you can reuse roles you have
-  already written instead of redefining them.
+  already written instead of redefining them. Interop reads `name`, `description`, `tools`,
+  `model`, and the body prompt addendum; if no Brunnr `kind` is present, Brunnr infers the
+  archetype from the name (`lead`/`master` -> `master`, `review`/`judge` -> `judge`, otherwise
+  `worker`). Brunnr does not copy vendor-reserved schema semantics.
 - Optional: definitions can additionally be indexed for semantic "find a role that does X"
   discovery; the files remain the source of truth.
+- `agents.list` includes both reachable agent/model entries and these role-definition summaries.
+  Before spawn, a definition's resolved agent/model is validated against the catalog; unavailable
+  bindings fail before any process starts.
 
 ## How a team works
 
@@ -77,6 +83,13 @@ validation. Report findings with severity ratings. (appended to the teammate's s
   on the same pool.
 - **Verifier + judge:** a result passes a verifier (the trust boundary) and an optional judge before
   it is accepted; the judge is the sole committer.
+- **Optional plan approval:** teams or specific role definitions can require a pre-execution plan.
+  In that case a task cannot be claimed until a `REVIEW` message with approval is posted by the
+  judge or lead. This is off by default because reviewers can reject good work as well as catch bad
+  plans.
+- **Feedback-aware admission seam:** teams bound the number of admitted teammates. When the cap is
+  reached, a teammate is paused instead of killed; current implementation reuses spawn caps and
+  quotas, leaving room for adaptive AIMD-style admission later.
 - **Lifecycle & safety:** every teammate spawns through the supervised process layer (own process
   group, persistent registry, startup reaper), so a teammate — and any child it spawns — is always
   cleaned up on completion, timeout, cancellation, or a crash. A team cannot fill the machine with
@@ -109,7 +122,7 @@ orchestration tools are off outside `orchestrate` / `full`, so this is the defau
 
 - **MCP team tools:** `team.create`, `team.spawn`, `team.task.add` / `claim` / `complete`,
   `team.message`, `team.status`, `team.cleanup` — over the same supervised engine.
-- **CLI:** `brunnr team …`.
+- **CLI:** `brunnr team …` exposes the same operations for foreground/local use.
 - **Lead role-skill:** a short instruction `brunnr init` writes so an in-session lead drives the team
   natively (read the catalog, recall via `memory.context`, delegate, gate via the judge).
 

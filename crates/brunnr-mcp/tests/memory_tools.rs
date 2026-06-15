@@ -10,6 +10,8 @@ use std::{
 use brunnr_core::{AgentBinding, AgentCatalog, AgentCatalogEntry, AgentModel, Mode, Role};
 use brunnr_mcp::{
     AnchorSetRequest, BindRequest, DelegateRequest, FindRequest, MemoryServer, StoreRequest,
+    TeamCreateRequest, TeamMessageKindRequest, TeamMessageRequest, TeamSpawnRequest,
+    TeamStatusRequest, TeamTaskAddRequest, TeamTaskClaimRequest, TeamTaskCompleteRequest,
     ToolsFindRequest,
 };
 use brunnr_test_support::TempDir;
@@ -126,6 +128,7 @@ async fn orchestration_tools_are_mode_gated_and_agents_list_reflects_catalog() {
     assert!(memory_tools.contains(&"memory.find".to_string()));
     assert!(!memory_tools.contains(&"agents.list".to_string()));
     assert!(!memory_tools.contains(&"orchestrate.delegate".to_string()));
+    assert!(!memory_tools.contains(&"team.create".to_string()));
 
     let catalog = AgentCatalog {
         generated_at: Some("test".to_string()),
@@ -141,6 +144,7 @@ async fn orchestration_tools_are_mode_gated_and_agents_list_reflects_catalog() {
                 source: "test".to_string(),
             }],
         }],
+        roles: Vec::new(),
     };
     let orchestrate = MemoryServer::new(tempdir.path())
         .with_mode(Mode::Orchestrate)
@@ -148,12 +152,49 @@ async fn orchestration_tools_are_mode_gated_and_agents_list_reflects_catalog() {
     let tools = orchestrate.visible_tool_names();
     assert!(tools.contains(&"agents.list".to_string()));
     assert!(tools.contains(&"orchestrate.delegate".to_string()));
+    assert!(tools.contains(&"team.create".to_string()));
+    assert!(tools.contains(&"team.cleanup".to_string()));
     let response = orchestrate
         .agents_list()
         .await
         .expect("agents.list should run")
         .0;
     assert_eq!(response.catalog, catalog);
+}
+
+#[tokio::test]
+async fn agents_list_surfaces_role_definitions() {
+    let tempdir = TempDir::new("mcp-team-definitions");
+    let definitions = tempdir.join(".agent").join("agents");
+    fs::create_dir_all(&definitions).expect("definition dir should exist");
+    fs::write(
+        definitions.join("worker.md"),
+        "---\nname: security-reviewer\nkind: worker\ndescription: Reviews security-sensitive changes.\nagent: sh\n---\nSecurity prompt.\n",
+    )
+    .expect("definition should write");
+    let server = MemoryServer::new(tempdir.join("memory"))
+        .with_mode(Mode::Orchestrate)
+        .with_repo_root(tempdir.path())
+        .with_bindings(vec![AgentBinding {
+            role: Role::Worker,
+            agent: "sh".to_string(),
+            model: None,
+            command: Some("sh".to_string()),
+            args: Vec::new(),
+            timeout_seconds: Some(5),
+        }]);
+
+    let response = server
+        .agents_list()
+        .await
+        .expect("agents.list should run")
+        .0;
+
+    assert!(response
+        .catalog
+        .roles
+        .iter()
+        .any(|role| role.name == "security-reviewer" && role.kind == Role::Worker));
 }
 
 #[tokio::test]
@@ -195,6 +236,7 @@ async fn orchestrate_bind_uses_cached_catalog_models() {
                 source: "provider-api".to_string(),
             }],
         }],
+        roles: Vec::new(),
     };
     let server = MemoryServer::new(tempdir.path())
         .with_mode(Mode::Orchestrate)
@@ -296,6 +338,200 @@ async fn orchestrate_delegate_error_redacts_process_secrets() {
 }
 
 #[tokio::test]
+async fn team_lifecycle_uses_definitions_plan_gate_and_cleanup() {
+    let tempdir = TempDir::new("mcp-team-lifecycle");
+    write_team_definitions(tempdir.path());
+    let server = MemoryServer::new(tempdir.join("memory"))
+        .with_mode(Mode::Orchestrate)
+        .with_task_root(tempdir.join("tasks"))
+        .with_repo_root(tempdir.path())
+        .with_process_registry_dir(tempdir.join("spawns"))
+        .with_bindings(team_bindings(
+            "printf 'worker-result\\n'",
+            "printf 'judge-ok\\n'",
+        ));
+
+    server
+        .team_create(Parameters(TeamCreateRequest {
+            id: Some("team".to_string()),
+            name: "Test Team".to_string(),
+            max_teammates: Some(3),
+            plan_approval_required: Some(true),
+            plan_approval_roles: None,
+        }))
+        .await
+        .expect("team should create");
+    server
+        .team_spawn(Parameters(TeamSpawnRequest {
+            team_id: "team".to_string(),
+            definition: "worker-a".to_string(),
+        }))
+        .await
+        .expect("worker should spawn");
+    server
+        .team_spawn(Parameters(TeamSpawnRequest {
+            team_id: "team".to_string(),
+            definition: "judge-a".to_string(),
+        }))
+        .await
+        .expect("judge should spawn");
+    let task = server
+        .team_task_add(Parameters(TeamTaskAddRequest {
+            team_id: "team".to_string(),
+            title: "Run team task".to_string(),
+            description: Some("Exercise Hirð lifecycle".to_string()),
+            definition: Some("worker-a".to_string()),
+            blockers: None,
+        }))
+        .await
+        .expect("task should add")
+        .0;
+
+    let blocked_claim = server
+        .team_task_claim(Parameters(TeamTaskClaimRequest {
+            team_id: "team".to_string(),
+            task_id: Some(task.task_id.clone()),
+            teammate: "worker-a".to_string(),
+        }))
+        .await;
+    assert!(
+        blocked_claim.is_err(),
+        "plan gate should block before review"
+    );
+
+    server
+        .team_message(Parameters(TeamMessageRequest {
+            team_id: "team".to_string(),
+            from: "judge-a".to_string(),
+            to: Some("worker-a".to_string()),
+            kind: TeamMessageKindRequest::Review,
+            content: "Plan approved".to_string(),
+            task_id: Some(task.task_id.clone()),
+            approved: Some(true),
+            execute: Some(false),
+        }))
+        .await
+        .expect("review should approve plan");
+    let claimed = server
+        .team_task_claim(Parameters(TeamTaskClaimRequest {
+            team_id: "team".to_string(),
+            task_id: Some(task.task_id.clone()),
+            teammate: "worker-a".to_string(),
+        }))
+        .await
+        .expect("approved task should claim")
+        .0;
+    assert!(claimed.task.is_some());
+    let message = server
+        .team_message(Parameters(TeamMessageRequest {
+            team_id: "team".to_string(),
+            from: "worker-a".to_string(),
+            to: Some("worker-a".to_string()),
+            kind: TeamMessageKindRequest::Ask,
+            content: "Execute the task".to_string(),
+            task_id: Some(task.task_id.clone()),
+            approved: None,
+            execute: Some(true),
+        }))
+        .await
+        .expect("worker message should execute")
+        .0;
+    assert_eq!(
+        message.response.as_deref().map(str::trim),
+        Some("worker-result")
+    );
+    let completed = server
+        .team_task_complete(Parameters(TeamTaskCompleteRequest {
+            team_id: "team".to_string(),
+            task_id: task.task_id,
+            reviewer: "judge-a".to_string(),
+            approved: true,
+        }))
+        .await
+        .expect("judge should complete")
+        .0;
+    assert_eq!(completed.status, "done");
+    let cleaned = server
+        .team_cleanup(Parameters(TeamStatusRequest {
+            team_id: "team".to_string(),
+        }))
+        .await
+        .expect("cleanup should run")
+        .0;
+    assert_eq!(cleaned.team["status"], "cleaned-up");
+    assert!(
+        brunnr_process_agent::ProcessSupervisor::new(tempdir.join("spawns"))
+            .entries()
+            .expect("registry should read")
+            .is_empty(),
+        "team cleanup should leave no tracked process groups"
+    );
+}
+
+#[tokio::test]
+async fn team_message_redacts_success_output_and_event_log() {
+    let tempdir = TempDir::new("mcp-team-secret");
+    write_team_definitions(tempdir.path());
+    let secret = "sk-team-mcp-secret-123456";
+    let server = MemoryServer::new(tempdir.join("memory"))
+        .with_mode(Mode::Orchestrate)
+        .with_task_root(tempdir.join("tasks"))
+        .with_repo_root(tempdir.path())
+        .with_process_registry_dir(tempdir.join("spawns"))
+        .with_bindings(team_bindings(
+            &format!("printf 'api_key={secret}\\n'"),
+            "printf 'judge-ok\\n'",
+        ));
+    server
+        .team_create(Parameters(TeamCreateRequest {
+            id: Some("team".to_string()),
+            name: "Test Team".to_string(),
+            max_teammates: None,
+            plan_approval_required: Some(false),
+            plan_approval_roles: None,
+        }))
+        .await
+        .expect("team should create");
+    server
+        .team_spawn(Parameters(TeamSpawnRequest {
+            team_id: "team".to_string(),
+            definition: "worker-a".to_string(),
+        }))
+        .await
+        .expect("worker should spawn");
+
+    let response = server
+        .team_message(Parameters(TeamMessageRequest {
+            team_id: "team".to_string(),
+            from: "worker-a".to_string(),
+            to: Some("worker-a".to_string()),
+            kind: TeamMessageKindRequest::Ask,
+            content: format!("use token={secret}"),
+            task_id: None,
+            approved: None,
+            execute: Some(true),
+        }))
+        .await
+        .expect("message should execute")
+        .0;
+    let status = server
+        .team_status(Parameters(TeamStatusRequest {
+            team_id: "team".to_string(),
+        }))
+        .await
+        .expect("status should run")
+        .0;
+    let text = serde_json::to_string(&serde_json::json!({
+        "response": response,
+        "status": status,
+    }))
+    .expect("json should encode");
+
+    assert!(!text.contains(secret));
+    assert!(text.contains("[REDACTED]"));
+}
+
+#[tokio::test]
 async fn memory_tools_store_and_find_with_sqlite_vec_backend() {
     let store = SqliteVecVectorStore::in_memory().expect("sqlite-vec should open");
     let backend = VectorMemoryBackend::with_embedder(
@@ -341,6 +577,42 @@ async fn memory_tools_store_and_find_with_sqlite_vec_backend() {
 
     assert_eq!(found.hits.len(), 1);
     assert_eq!(found.hits[0].node_id, "node:mcp-sqlite");
+}
+
+fn write_team_definitions(root: &std::path::Path) {
+    let definitions = root.join(".agent").join("agents");
+    fs::create_dir_all(&definitions).expect("definition dir should exist");
+    fs::write(
+        definitions.join("worker-a.md"),
+        "---\nname: worker-a\nkind: worker\ndescription: Executes bounded team tasks.\nagent: worker-sh\n---\nWorker prompt.\n",
+    )
+    .expect("worker definition should write");
+    fs::write(
+        definitions.join("judge-a.md"),
+        "---\nname: judge-a\nkind: judge\ndescription: Reviews team task results.\nagent: judge-sh\n---\nJudge prompt.\n",
+    )
+    .expect("judge definition should write");
+}
+
+fn team_bindings(worker_script: &str, judge_script: &str) -> Vec<AgentBinding> {
+    vec![
+        AgentBinding {
+            role: Role::Worker,
+            agent: "worker-sh".to_string(),
+            model: None,
+            command: Some("sh".to_string()),
+            args: vec!["-c".to_string(), worker_script.to_string()],
+            timeout_seconds: Some(2),
+        },
+        AgentBinding {
+            role: Role::Judge,
+            agent: "judge-sh".to_string(),
+            model: None,
+            command: Some("sh".to_string()),
+            args: vec!["-c".to_string(), judge_script.to_string()],
+            timeout_seconds: Some(2),
+        },
+    ]
 }
 
 const TEST_DIMENSIONS: usize = 8;

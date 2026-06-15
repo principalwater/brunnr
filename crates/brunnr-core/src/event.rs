@@ -11,7 +11,10 @@ use crate::Role;
 pub enum EventType {
     TaskAnnounced,
     TaskClaimed,
+    Ask,
     Result,
+    Review,
+    Done,
     Verdict,
     Blocked,
     Status,

@@ -18,6 +18,10 @@ use brunnr_process_agent::{
     ProcessSupervisor,
 };
 use clap::{Parser, Subcommand, ValueEnum};
+use hird::{
+    load_role_definitions, role_summaries, TeamCreate, TeamMessage, TeamMessageKind, TeamRuntime,
+    TeamRuntimeConfig, TeamSpawn, TeamTaskAdd, TeamTaskClaim, TeamTaskComplete,
+};
 use mimisbrunnr::{
     default_migration_collection, export_okf_bundle, recover_after_compaction, verify_okf_bundle,
     CollectionCompat, MemoryBackend, MemoryQuery, MemoryScope, MemoryTier, MigrationPlan,
@@ -125,6 +129,10 @@ enum Command {
         #[command(subcommand)]
         command: TaskCommand,
     },
+    Team {
+        #[command(subcommand)]
+        command: TeamCommand,
+    },
     Backfill {
         directory: PathBuf,
         #[arg(long, default_value = DEFAULT_CONFIG)]
@@ -201,6 +209,115 @@ enum AgentsCommand {
         #[arg(long)]
         cache: Option<PathBuf>,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum TeamCommand {
+    Create {
+        name: String,
+        #[arg(long)]
+        id: Option<String>,
+        #[arg(long)]
+        max_teammates: Option<usize>,
+        #[arg(long)]
+        plan_approval_required: bool,
+        #[arg(long = "plan-approval-role")]
+        plan_approval_roles: Vec<String>,
+        #[arg(long, default_value = DEFAULT_CONFIG)]
+        config: PathBuf,
+    },
+    Spawn {
+        team_id: String,
+        definition: String,
+        #[arg(long, default_value = DEFAULT_CONFIG)]
+        config: PathBuf,
+    },
+    Task {
+        #[command(subcommand)]
+        command: TeamTaskCommand,
+    },
+    Message {
+        team_id: String,
+        #[arg(long)]
+        from: String,
+        #[arg(long)]
+        to: Option<String>,
+        #[arg(long, value_enum, default_value_t = TeamMessageKindArg::Ask)]
+        kind: TeamMessageKindArg,
+        content: String,
+        #[arg(long)]
+        task_id: Option<String>,
+        #[arg(long)]
+        approved: Option<bool>,
+        #[arg(long)]
+        execute: bool,
+        #[arg(long, default_value = DEFAULT_CONFIG)]
+        config: PathBuf,
+    },
+    Status {
+        team_id: String,
+        #[arg(long, default_value = DEFAULT_CONFIG)]
+        config: PathBuf,
+    },
+    Cleanup {
+        team_id: String,
+        #[arg(long, default_value = DEFAULT_CONFIG)]
+        config: PathBuf,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum TeamTaskCommand {
+    Add {
+        team_id: String,
+        title: String,
+        #[arg(long, default_value = "")]
+        description: String,
+        #[arg(long)]
+        definition: Option<String>,
+        #[arg(long = "blocker")]
+        blockers: Vec<String>,
+        #[arg(long, default_value = DEFAULT_CONFIG)]
+        config: PathBuf,
+    },
+    Claim {
+        team_id: String,
+        #[arg(long)]
+        task_id: Option<String>,
+        #[arg(long)]
+        teammate: String,
+        #[arg(long, default_value = DEFAULT_CONFIG)]
+        config: PathBuf,
+    },
+    Complete {
+        team_id: String,
+        task_id: String,
+        #[arg(long)]
+        reviewer: String,
+        #[arg(long)]
+        approved: bool,
+        #[arg(long, default_value = DEFAULT_CONFIG)]
+        config: PathBuf,
+    },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum TeamMessageKindArg {
+    Ask,
+    Result,
+    Review,
+    Done,
+}
+
+impl From<TeamMessageKindArg> for TeamMessageKind {
+    fn from(value: TeamMessageKindArg) -> Self {
+        match value {
+            TeamMessageKindArg::Ask => Self::Ask,
+            TeamMessageKindArg::Result => Self::Result,
+            TeamMessageKindArg::Review => Self::Review,
+            TeamMessageKindArg::Done => Self::Done,
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -459,6 +576,7 @@ async fn main() -> Result<()> {
         } => run_orchestrator(config, root, dry_run, once).await,
         Command::Memory { command } => memory(command).await,
         Command::Task { command } => task(command).await,
+        Command::Team { command } => team(command).await,
         Command::Backfill {
             directory,
             config,
@@ -597,6 +715,210 @@ async fn task(command: TaskCommand) -> Result<()> {
     Ok(())
 }
 
+async fn team(command: TeamCommand) -> Result<()> {
+    match command {
+        TeamCommand::Create {
+            name,
+            id,
+            max_teammates,
+            plan_approval_required,
+            plan_approval_roles,
+            config,
+        } => {
+            let mut runtime = team_runtime(&config).await?;
+            let team = runtime.create_team(TeamCreate {
+                id,
+                name,
+                max_teammates,
+                plan_approval_required,
+                plan_approval_roles,
+            });
+            println!("{}", serde_json::to_string_pretty(&team)?);
+        }
+        TeamCommand::Spawn {
+            team_id,
+            definition,
+            config,
+        } => {
+            let mut runtime = team_runtime(&config).await?;
+            ensure_ephemeral_team(&mut runtime, &team_id);
+            let teammate = runtime
+                .spawn_teammate(TeamSpawn {
+                    team_id,
+                    definition,
+                })
+                .await?;
+            println!("{}", serde_json::to_string_pretty(&teammate)?);
+        }
+        TeamCommand::Task { command } => team_task(command).await?,
+        TeamCommand::Message {
+            team_id,
+            from,
+            to,
+            kind,
+            content,
+            task_id,
+            approved,
+            execute,
+            config,
+        } => {
+            let mut runtime = team_runtime(&config).await?;
+            ensure_ephemeral_team(&mut runtime, &team_id);
+            let outcome = runtime
+                .message(TeamMessage {
+                    team_id,
+                    from,
+                    to,
+                    kind: kind.into(),
+                    content,
+                    task_id,
+                    approved,
+                    execute,
+                })
+                .await?;
+            println!("{}", serde_json::to_string_pretty(&outcome)?);
+        }
+        TeamCommand::Status { team_id, config } => {
+            let mut runtime = team_runtime(&config).await?;
+            ensure_ephemeral_team(&mut runtime, &team_id);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&runtime.status(&team_id)?)?
+            );
+        }
+        TeamCommand::Cleanup { team_id, config } => {
+            let mut runtime = team_runtime(&config).await?;
+            ensure_ephemeral_team(&mut runtime, &team_id);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&runtime.cleanup(&team_id)?)?
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn team_task(command: TeamTaskCommand) -> Result<()> {
+    match command {
+        TeamTaskCommand::Add {
+            team_id,
+            title,
+            description,
+            definition,
+            blockers,
+            config,
+        } => {
+            let mut runtime = team_runtime(&config).await?;
+            ensure_ephemeral_team(&mut runtime, &team_id);
+            let task = runtime
+                .add_task(TeamTaskAdd {
+                    team_id,
+                    title,
+                    description,
+                    definition,
+                    blockers,
+                })
+                .await?;
+            println!("{}", serde_json::to_string_pretty(&task)?);
+        }
+        TeamTaskCommand::Claim {
+            team_id,
+            task_id,
+            teammate,
+            config,
+        } => {
+            let mut runtime = team_runtime(&config).await?;
+            ensure_ephemeral_team(&mut runtime, &team_id);
+            let task = runtime
+                .claim_task(TeamTaskClaim {
+                    team_id,
+                    task_id,
+                    teammate,
+                })
+                .await?;
+            println!("{}", serde_json::to_string_pretty(&task)?);
+        }
+        TeamTaskCommand::Complete {
+            team_id,
+            task_id,
+            reviewer,
+            approved,
+            config,
+        } => {
+            let mut runtime = team_runtime(&config).await?;
+            ensure_ephemeral_team(&mut runtime, &team_id);
+            let task = runtime
+                .complete_task(TeamTaskComplete {
+                    team_id,
+                    task_id,
+                    reviewer,
+                    approved,
+                })
+                .await?;
+            println!("{}", serde_json::to_string_pretty(&task)?);
+        }
+    }
+    Ok(())
+}
+
+async fn team_runtime(config_path: &Path) -> Result<TeamRuntime> {
+    let config = load_config(config_path)?;
+    if !matches!(config.mode, Mode::Orchestrate | Mode::Full) {
+        bail!(
+            "team tools require mode orchestrate or full, got {:?}",
+            config.mode
+        );
+    }
+    let repo_root = env::current_dir()?;
+    let definitions = load_role_definitions(&repo_root)?;
+    let mut catalog = fallback_agent_catalog(&config.agents);
+    catalog.roles = role_summaries(&definitions);
+    let process_defaults = process_supervisor_from_config(&config, &repo_root);
+    Ok(TeamRuntime::new(TeamRuntimeConfig {
+        repo_root,
+        task_root: PathBuf::from(&config.memory.root).join("tasks"),
+        registry_dir: process_defaults.registry_dir().to_path_buf(),
+        bindings: config.agents,
+        catalog,
+        definitions,
+        max_teammates: config
+            .coordination
+            .max_concurrent_spawns
+            .unwrap_or(4)
+            .max(1),
+        max_concurrent_spawns: config
+            .coordination
+            .max_concurrent_spawns
+            .unwrap_or(4)
+            .max(1),
+        max_lifetime: Duration::from_secs(
+            config
+                .coordination
+                .spawn_max_lifetime_seconds
+                .unwrap_or(30 * 60),
+        ),
+        termination_grace: Duration::from_millis(
+            config
+                .coordination
+                .spawn_shutdown_grace_millis
+                .unwrap_or(2_000),
+        ),
+    }))
+}
+
+fn ensure_ephemeral_team(runtime: &mut TeamRuntime, team_id: &str) {
+    if runtime.status(team_id).is_ok() {
+        return;
+    }
+    let _ = runtime.create_team(TeamCreate {
+        id: Some(team_id.to_string()),
+        name: team_id.to_string(),
+        max_teammates: None,
+        plan_approval_required: false,
+        plan_approval_roles: Vec::new(),
+    });
+}
+
 async fn init(options: InitOptions, _non_interactive: bool) -> Result<()> {
     fs::create_dir_all(options.memory_root.join("memory"))
         .with_context(|| format!("create memory root {}", options.memory_root.display()))?;
@@ -662,7 +984,7 @@ fn write_master_role_skill(memory_root: &Path) -> Result<()> {
     }
     fs::write(
         path,
-        "<!-- SPDX-License-Identifier: Apache-2.0 -->\n\n# Brunnr Master Role Skill\n\nWhen Brunnr is running in `orchestrate` or `full` mode, inspect `agents.list` before delegation, use `memory.context` for compact project recall, delegate bounded subtasks with `orchestrate.delegate` to the configured worker role, and hand results to the judge/master path with `orchestrate.handoff` before accepting durable outcomes.\n",
+        "<!-- SPDX-License-Identifier: Apache-2.0 -->\n\n# Brunnr Lead Role Skill\n\nWhen Brunnr is running in `orchestrate` or `full` mode, inspect `agents.list` for reachable agents, models, and role definitions. Use `memory.context` for compact project recall. For multi-teammate work, create a Hirð with `team.create`, admit definitions with `team.spawn`, coordinate through `team.task.*` and `team.message`, and gate accepted outcomes through the judge/master path before marking work done. For a single bounded subtask, `orchestrate.delegate(worker)` is still sufficient.\n",
     )?;
     Ok(())
 }
@@ -702,7 +1024,8 @@ async fn agents(command: AgentsCommand) -> Result<()> {
             let config = load_config(&config)?;
             let cache =
                 cache.unwrap_or_else(|| PathBuf::from(&config.memory.root).join("agents.json"));
-            let catalog = refresh_agent_catalog(&config.agents, &cache).await?;
+            let mut catalog = refresh_agent_catalog(&config.agents, &cache).await?;
+            catalog.roles = role_summaries(&load_role_definitions(env::current_dir()?)?);
             println!("{}", serde_json::to_string_pretty(&catalog)?);
         }
     }

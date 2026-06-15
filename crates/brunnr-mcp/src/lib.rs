@@ -19,6 +19,10 @@ use brunnr_process_agent::{
     fallback_agent_catalog, load_or_refresh_agent_catalog, validate_binding_model, ProcessAgent,
     ProcessAgentConfig,
 };
+use hird::{
+    load_role_definitions, role_summaries, TeamCreate, TeamMessage, TeamMessageKind, TeamRuntime,
+    TeamRuntimeConfig, TeamSpawn, TeamTaskAdd, TeamTaskClaim, TeamTaskComplete,
+};
 use mimisbrunnr::{
     FilesBackend, MemoryBackend, MemoryQuery, MemoryScope, MemoryTier, MuninnAnchorStore,
     SessionAnchor, SqliteVecVectorStore, SqliteVecVectorStoreConfig, StoreMemory,
@@ -36,19 +40,28 @@ use rmcp::{
 };
 use serde::{Deserialize, Serialize};
 use thingr::{ClaimRequest, FilesTaskStore, NewTask, TaskStatus, TaskStore, TransitionTask};
+use tokio::sync::Mutex as AsyncMutex;
 
 #[cfg(feature = "qdrant")]
 use mimisbrunnr::{QdrantVectorStore, QdrantVectorStoreConfig};
 
 const TOOL_INSTRUCTIONS: &str =
     "ALWAYS search the project memory before non-trivial work; store durable, reusable learnings.";
-const MASTER_ROLE_SKILL: &str = "In orchestrate/full mode, first call agents.list to inspect reachable role models. Use memory.context for compact project recall, delegate bounded subtasks with orchestrate.delegate(worker), and hand results to judge/master with orchestrate.handoff before accepting durable outcomes.";
+const MASTER_ROLE_SKILL: &str = "In orchestrate/full mode, first call agents.list to inspect reachable agents, models, and role definitions. Use memory.context for compact project recall, create Hirð teams with team.create/team.spawn when several teammates are useful, delegate bounded subtasks through team.task.* or orchestrate.delegate(worker), and gate accepted outcomes through the judge/master path before marking work done.";
 const ORCHESTRATION_TOOLS: &[&str] = &[
     "agents.list",
     "orchestrate.bind",
     "orchestrate.delegate",
     "orchestrate.status",
     "orchestrate.handoff",
+    "team.create",
+    "team.spawn",
+    "team.task.add",
+    "team.task.claim",
+    "team.task.complete",
+    "team.message",
+    "team.status",
+    "team.cleanup",
 ];
 
 #[derive(Clone)]
@@ -61,6 +74,7 @@ pub struct MemoryServer {
     bindings: Arc<Mutex<Vec<AgentBinding>>>,
     catalog: Arc<Mutex<AgentCatalog>>,
     delegate_results: Arc<Mutex<HashMap<String, DelegateRecord>>>,
+    team_runtime: Arc<AsyncMutex<TeamRuntime>>,
     task_root: PathBuf,
     repo_root: PathBuf,
     process_defaults: ProcessDefaults,
@@ -94,6 +108,10 @@ impl MemoryServer {
             bindings: Arc::new(Mutex::new(Vec::new())),
             catalog: Arc::new(Mutex::new(AgentCatalog::default())),
             delegate_results: Arc::new(Mutex::new(HashMap::new())),
+            team_runtime: Arc::new(AsyncMutex::new(TeamRuntime::new(TeamRuntimeConfig::new(
+                std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+                PathBuf::from(".brunnr").join("tasks"),
+            )))),
             task_root: PathBuf::from(".brunnr").join("tasks"),
             repo_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             process_defaults: ProcessDefaults::default(),
@@ -114,21 +132,52 @@ impl MemoryServer {
     pub fn with_runtime_config(mut self, config: &BrunnrConfig) -> Self {
         self.mode = config.mode;
         self.bindings = Arc::new(Mutex::new(config.agents.clone()));
-        self.catalog = Arc::new(Mutex::new(fallback_agent_catalog(&config.agents)));
+        let mut catalog = fallback_agent_catalog(&config.agents);
         self.task_root = PathBuf::from(&config.memory.root).join("tasks");
         self.repo_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         self.process_defaults = ProcessDefaults::from_config(config);
+        let definitions = load_role_definitions(&self.repo_root).unwrap_or_default();
+        catalog.roles = role_summaries(&definitions);
+        self.catalog = Arc::new(Mutex::new(catalog.clone()));
+        self.team_runtime = Arc::new(AsyncMutex::new(self.build_team_runtime(
+            config.agents.clone(),
+            catalog,
+            definitions,
+        )));
         self.tool_router = Self::mode_tool_router(config.mode);
         self
     }
 
     pub fn with_catalog(mut self, catalog: AgentCatalog) -> Self {
+        let bindings = self
+            .bindings
+            .lock()
+            .map(|bindings| bindings.clone())
+            .unwrap_or_default();
+        let definitions = load_role_definitions(&self.repo_root).unwrap_or_default();
+        let mut catalog = catalog;
+        if catalog.roles.is_empty() {
+            catalog.roles = role_summaries(&definitions);
+        }
+        self.team_runtime = Arc::new(AsyncMutex::new(self.build_team_runtime(
+            bindings,
+            catalog.clone(),
+            definitions,
+        )));
         self.catalog = Arc::new(Mutex::new(catalog));
         self
     }
 
     pub fn with_bindings(mut self, bindings: Vec<AgentBinding>) -> Self {
-        self.catalog = Arc::new(Mutex::new(fallback_agent_catalog(&bindings)));
+        let mut catalog = fallback_agent_catalog(&bindings);
+        let definitions = load_role_definitions(&self.repo_root).unwrap_or_default();
+        catalog.roles = role_summaries(&definitions);
+        self.team_runtime = Arc::new(AsyncMutex::new(self.build_team_runtime(
+            bindings.clone(),
+            catalog.clone(),
+            definitions,
+        )));
+        self.catalog = Arc::new(Mutex::new(catalog));
         self.bindings = Arc::new(Mutex::new(bindings));
         self
     }
@@ -223,11 +272,31 @@ impl MemoryServer {
             .command
             .clone()
             .unwrap_or_else(|| binding.agent.clone());
+        let static_models = self
+            .catalog
+            .lock()
+            .ok()
+            .and_then(|catalog| {
+                catalog
+                    .agents
+                    .iter()
+                    .find(|entry| entry.agent == binding.agent)
+                    .map(|entry| {
+                        entry
+                            .models
+                            .iter()
+                            .filter(|model| model.reachable)
+                            .map(|model| model.id.clone())
+                            .collect::<Vec<_>>()
+                    })
+            })
+            .unwrap_or_default();
         ProcessAgent::new(
             ProcessAgentConfig::new(command)
                 .with_agent_id(binding.agent.clone())
                 .with_default_model(binding.model.clone())
                 .with_args(binding.args.clone())
+                .with_static_models(static_models)
                 .with_working_dir(&self.repo_root)
                 .with_timeout(Duration::from_secs(binding.timeout_seconds.unwrap_or(120)))
                 .with_registry_dir(self.process_defaults.registry_dir.clone())
@@ -248,6 +317,26 @@ impl MemoryServer {
             .map_err(|error| ErrorData::internal_error(error.to_string(), None))?
             .insert(task_id, DelegateRecord { status, result });
         Ok(())
+    }
+
+    fn build_team_runtime(
+        &self,
+        bindings: Vec<AgentBinding>,
+        catalog: AgentCatalog,
+        definitions: Vec<hird::RoleDefinition>,
+    ) -> TeamRuntime {
+        TeamRuntime::new(TeamRuntimeConfig {
+            repo_root: self.repo_root.clone(),
+            task_root: self.task_root.clone(),
+            registry_dir: self.process_defaults.registry_dir.clone(),
+            bindings,
+            catalog,
+            definitions,
+            max_teammates: self.process_defaults.max_concurrent_spawns,
+            max_concurrent_spawns: self.process_defaults.max_concurrent_spawns,
+            max_lifetime: self.process_defaults.max_lifetime,
+            termination_grace: self.process_defaults.termination_grace,
+        })
     }
 }
 
@@ -493,6 +582,110 @@ pub struct HandoffRequest {
 pub struct HandoffResponse {
     pub accepted: bool,
     pub to: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct TeamCreateRequest {
+    pub id: Option<String>,
+    pub name: String,
+    pub max_teammates: Option<usize>,
+    pub plan_approval_required: Option<bool>,
+    pub plan_approval_roles: Option<Vec<String>>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct TeamResponse {
+    pub team: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct TeamSpawnRequest {
+    pub team_id: String,
+    pub definition: String,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct TeamSpawnResponse {
+    pub teammate: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct TeamTaskAddRequest {
+    pub team_id: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub definition: Option<String>,
+    pub blockers: Option<Vec<String>>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct TeamTaskResponse {
+    pub task_id: String,
+    pub status: String,
+    pub task: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct TeamTaskClaimRequest {
+    pub team_id: String,
+    pub task_id: Option<String>,
+    pub teammate: String,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct TeamTaskClaimResponse {
+    pub task: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct TeamTaskCompleteRequest {
+    pub team_id: String,
+    pub task_id: String,
+    pub reviewer: String,
+    pub approved: bool,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum TeamMessageKindRequest {
+    Ask,
+    Result,
+    Review,
+    Done,
+}
+
+impl From<TeamMessageKindRequest> for TeamMessageKind {
+    fn from(value: TeamMessageKindRequest) -> Self {
+        match value {
+            TeamMessageKindRequest::Ask => Self::Ask,
+            TeamMessageKindRequest::Result => Self::Result,
+            TeamMessageKindRequest::Review => Self::Review,
+            TeamMessageKindRequest::Done => Self::Done,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct TeamMessageRequest {
+    pub team_id: String,
+    pub from: String,
+    pub to: Option<String>,
+    pub kind: TeamMessageKindRequest,
+    pub content: String,
+    pub task_id: Option<String>,
+    pub approved: Option<bool>,
+    pub execute: Option<bool>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct TeamMessageResponse {
+    pub event: serde_json::Value,
+    pub response: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct TeamStatusRequest {
+    pub team_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -924,6 +1117,201 @@ impl MemoryServer {
             to: to.canonical_alias().to_string(),
         }))
     }
+
+    #[tool(
+        name = "team.create",
+        description = "Create an opt-in Hirð team topology for orchestrate/full mode."
+    )]
+    pub async fn team_create(
+        &self,
+        Parameters(request): Parameters<TeamCreateRequest>,
+    ) -> Result<Json<TeamResponse>, ErrorData> {
+        self.ensure_orchestration_enabled()?;
+        let mut runtime = self.team_runtime.lock().await;
+        let team = runtime.create_team(TeamCreate {
+            id: request.id,
+            name: request.name,
+            max_teammates: request.max_teammates,
+            plan_approval_required: request.plan_approval_required.unwrap_or(false),
+            plan_approval_roles: request.plan_approval_roles.unwrap_or_default(),
+        });
+        Ok(Json(TeamResponse {
+            team: serde_json::to_value(team)
+                .map_err(|error| ErrorData::internal_error(error.to_string(), None))?,
+        }))
+    }
+
+    #[tool(
+        name = "team.spawn",
+        description = "Admit and spawn a teammate from a .agent/agents or .claude/agents definition through the supervised ProcessAgent path."
+    )]
+    pub async fn team_spawn(
+        &self,
+        Parameters(request): Parameters<TeamSpawnRequest>,
+    ) -> Result<Json<TeamSpawnResponse>, ErrorData> {
+        self.ensure_orchestration_enabled()?;
+        let mut runtime = self.team_runtime.lock().await;
+        let teammate = runtime
+            .spawn_teammate(TeamSpawn {
+                team_id: request.team_id,
+                definition: request.definition,
+            })
+            .await
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        Ok(Json(TeamSpawnResponse {
+            teammate: serde_json::to_value(teammate)
+                .map_err(|error| ErrorData::internal_error(error.to_string(), None))?,
+        }))
+    }
+
+    #[tool(
+        name = "team.task.add",
+        description = "Add a task to the shared Þing task board for a Hirð team."
+    )]
+    pub async fn team_task_add(
+        &self,
+        Parameters(request): Parameters<TeamTaskAddRequest>,
+    ) -> Result<Json<TeamTaskResponse>, ErrorData> {
+        self.ensure_orchestration_enabled()?;
+        let mut runtime = self.team_runtime.lock().await;
+        let task = runtime
+            .add_task(TeamTaskAdd {
+                team_id: request.team_id,
+                title: request.title,
+                description: request.description.unwrap_or_default(),
+                definition: request.definition,
+                blockers: request.blockers.unwrap_or_default(),
+            })
+            .await
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        Ok(Json(TeamTaskResponse {
+            task_id: task.id.clone(),
+            status: format!("{:?}", task.status).to_ascii_lowercase(),
+            task: serde_json::to_value(task)
+                .map_err(|error| ErrorData::internal_error(error.to_string(), None))?,
+        }))
+    }
+
+    #[tool(
+        name = "team.task.claim",
+        description = "Atomically claim an eligible team task, respecting opt-in plan approval gates."
+    )]
+    pub async fn team_task_claim(
+        &self,
+        Parameters(request): Parameters<TeamTaskClaimRequest>,
+    ) -> Result<Json<TeamTaskClaimResponse>, ErrorData> {
+        self.ensure_orchestration_enabled()?;
+        let mut runtime = self.team_runtime.lock().await;
+        let task = runtime
+            .claim_task(TeamTaskClaim {
+                team_id: request.team_id,
+                task_id: request.task_id,
+                teammate: request.teammate,
+            })
+            .await
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        Ok(Json(TeamTaskClaimResponse {
+            task: task
+                .map(serde_json::to_value)
+                .transpose()
+                .map_err(|error| ErrorData::internal_error(error.to_string(), None))?,
+        }))
+    }
+
+    #[tool(
+        name = "team.task.complete",
+        description = "Complete or block a team task through the judge/master gate."
+    )]
+    pub async fn team_task_complete(
+        &self,
+        Parameters(request): Parameters<TeamTaskCompleteRequest>,
+    ) -> Result<Json<TeamTaskResponse>, ErrorData> {
+        self.ensure_orchestration_enabled()?;
+        let mut runtime = self.team_runtime.lock().await;
+        let task = runtime
+            .complete_task(TeamTaskComplete {
+                team_id: request.team_id,
+                task_id: request.task_id,
+                reviewer: request.reviewer,
+                approved: request.approved,
+            })
+            .await
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        Ok(Json(TeamTaskResponse {
+            task_id: task.id.clone(),
+            status: format!("{:?}", task.status).to_ascii_lowercase(),
+            task: serde_json::to_value(task)
+                .map_err(|error| ErrorData::internal_error(error.to_string(), None))?,
+        }))
+    }
+
+    #[tool(
+        name = "team.message",
+        description = "Post a typed Hirð message (ASK/RESULT/REVIEW/DONE); direct addressing rides the shared EventEnvelope pool."
+    )]
+    pub async fn team_message(
+        &self,
+        Parameters(request): Parameters<TeamMessageRequest>,
+    ) -> Result<Json<TeamMessageResponse>, ErrorData> {
+        self.ensure_orchestration_enabled()?;
+        let mut runtime = self.team_runtime.lock().await;
+        let outcome = runtime
+            .message(TeamMessage {
+                team_id: request.team_id,
+                from: request.from,
+                to: request.to,
+                kind: request.kind.into(),
+                content: request.content,
+                task_id: request.task_id,
+                approved: request.approved,
+                execute: request.execute.unwrap_or(false),
+            })
+            .await
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        Ok(Json(TeamMessageResponse {
+            event: serde_json::to_value(outcome.event)
+                .map_err(|error| ErrorData::internal_error(error.to_string(), None))?,
+            response: outcome.response,
+        }))
+    }
+
+    #[tool(
+        name = "team.status",
+        description = "Return Hirð team lifecycle, teammates, and redacted EventEnvelope pool."
+    )]
+    pub async fn team_status(
+        &self,
+        Parameters(request): Parameters<TeamStatusRequest>,
+    ) -> Result<Json<TeamResponse>, ErrorData> {
+        self.ensure_orchestration_enabled()?;
+        let runtime = self.team_runtime.lock().await;
+        let team = runtime
+            .status(&request.team_id)
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        Ok(Json(TeamResponse {
+            team: serde_json::to_value(team)
+                .map_err(|error| ErrorData::internal_error(error.to_string(), None))?,
+        }))
+    }
+
+    #[tool(
+        name = "team.cleanup",
+        description = "Terminate tracked teammate process groups for the current owner and mark the Hirð team cleaned up."
+    )]
+    pub async fn team_cleanup(
+        &self,
+        Parameters(request): Parameters<TeamStatusRequest>,
+    ) -> Result<Json<TeamResponse>, ErrorData> {
+        self.ensure_orchestration_enabled()?;
+        let mut runtime = self.team_runtime.lock().await;
+        let team = runtime
+            .cleanup(&request.team_id)
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        Ok(Json(TeamResponse {
+            team: serde_json::to_value(team)
+                .map_err(|error| ErrorData::internal_error(error.to_string(), None))?,
+        }))
+    }
 }
 
 #[tool_handler(router = self.tool_router)]
@@ -1090,6 +1478,38 @@ fn tool_registry() -> &'static [RegisteredTool] {
         RegisteredTool {
             name: "orchestrate.handoff",
             description: "Hand results to judge or master for orchestration follow-up.",
+        },
+        RegisteredTool {
+            name: "team.create",
+            description: "Create a Hirð agent team topology in orchestrate or full mode.",
+        },
+        RegisteredTool {
+            name: "team.spawn",
+            description: "Spawn a defined teammate through the supervised ProcessAgent path.",
+        },
+        RegisteredTool {
+            name: "team.task.add",
+            description: "Add a task to the shared Þing task board for a team.",
+        },
+        RegisteredTool {
+            name: "team.task.claim",
+            description: "Atomically claim an eligible team task with plan gate checks.",
+        },
+        RegisteredTool {
+            name: "team.task.complete",
+            description: "Complete or block a team task through judge or master review.",
+        },
+        RegisteredTool {
+            name: "team.message",
+            description: "Post ASK, RESULT, REVIEW, or DONE messages to the EventEnvelope pool.",
+        },
+        RegisteredTool {
+            name: "team.status",
+            description: "Inspect team lifecycle state, teammates, and redacted message pool.",
+        },
+        RegisteredTool {
+            name: "team.cleanup",
+            description: "Clean up tracked teammate process groups and mark a team cleaned up.",
         },
     ]
 }

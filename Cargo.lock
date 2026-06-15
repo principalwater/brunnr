@@ -267,6 +267,7 @@ dependencies = [
  "brunnr-process-agent",
  "brunnr-test-support",
  "clap",
+ "hird",
  "hvergelmir",
  "mimisbrunnr",
  "serde",
@@ -302,6 +303,7 @@ dependencies = [
  "brunnr-process-agent",
  "brunnr-test-support",
  "clap",
+ "hird",
  "mimisbrunnr",
  "rmcp",
  "schemars",
@@ -1072,6 +1074,22 @@ dependencies = [
  "thiserror 2.0.18",
  "ureq",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "hird"
+version = "0.1.0"
+dependencies = [
+ "brunnr-core",
+ "brunnr-process-agent",
+ "brunnr-test-support",
+ "chrono",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thingr",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]

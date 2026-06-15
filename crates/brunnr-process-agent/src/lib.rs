@@ -272,6 +272,7 @@ pub async fn refresh_agent_catalog(
     let catalog = AgentCatalog {
         generated_at: Some(now_unix_ms().to_string()),
         agents: entries,
+        roles: Vec::new(),
     };
     write_catalog(cache_path, &catalog)?;
     Ok(catalog)
@@ -313,6 +314,7 @@ pub fn fallback_agent_catalog(bindings: &[AgentBinding]) -> AgentCatalog {
     AgentCatalog {
         generated_at: Some(now_unix_ms().to_string()),
         agents: entries,
+        roles: Vec::new(),
     }
 }
 

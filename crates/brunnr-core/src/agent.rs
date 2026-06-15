@@ -168,6 +168,8 @@ pub struct AgentCatalogEntry {
 pub struct AgentCatalog {
     pub generated_at: Option<String>,
     pub agents: Vec<AgentCatalogEntry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub roles: Vec<AgentRoleDefinition>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -178,6 +180,20 @@ pub enum AgentUnreachableReason {
     Quota,
     Network,
     Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AgentRoleDefinition {
+    pub name: String,
+    pub kind: Role,
+    pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allow_tools: Vec<String>,
+    pub source: String,
 }
 
 #[derive(Debug, Error)]

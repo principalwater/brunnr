@@ -12,6 +12,7 @@ anyhow.workspace = true
 brunnr-core = { path = "../brunnr-core" }
 brunnr-process-agent = { path = "../brunnr-process-agent" }
 clap.workspace = true
+hird.workspace = true
 mimisbrunnr = { path = "../mimisbrunnr" }
 rmcp = { workspace = true, features = ["transport-io"] }
 schemars.workspace = true

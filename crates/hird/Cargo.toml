@@ -1,38 +1,22 @@
 # SPDX-License-Identifier: Apache-2.0
 
 [package]
-name = "brunnr-cli"
+name = "hird"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-anyhow.workspace = true
 brunnr-core = { path = "../brunnr-core" }
 brunnr-process-agent = { path = "../brunnr-process-agent" }
-clap.workspace = true
-hird.workspace = true
-hvergelmir = { path = "../hvergelmir" }
-mimisbrunnr = { path = "../mimisbrunnr" }
+chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+serde_yaml.workspace = true
+thiserror.workspace = true
 thingr = { path = "../thingr" }
 tokio.workspace = true
-toml.workspace = true
-toml_edit.workspace = true
-urdarbrunnr = { path = "../urdarbrunnr" }
-
-[features]
-qdrant = ["mimisbrunnr/qdrant"]
-
-[[bin]]
-name = "brunnr"
-path = "src/main.rs"
-
-[[bin]]
-name = "brunnrd"
-path = "src/brunnrd.rs"
 
 [dev-dependencies]
 brunnr-test-support.workspace = true
