@@ -2,13 +2,13 @@
 
 use std::{env, path::PathBuf, time::Duration};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use brunnr_core::Mode;
 use clap::Parser;
 use serde_json::json;
 
 mod runtime;
-use runtime::{build_orchestrator, load_config};
+use runtime::{build_orchestrator, load_config, process_supervisor_from_config, shutdown_signal};
 
 const DEFAULT_CONFIG: &str = "brunnr.toml";
 
@@ -41,10 +41,29 @@ async fn main() -> Result<()> {
         .root
         .unwrap_or_else(|| PathBuf::from(&config.memory.root));
     let repo_root = env::current_dir()?;
+    let supervisor = process_supervisor_from_config(&config, &repo_root);
+    let reaped = supervisor.reap_stale()?;
+    if reaped.terminated > 0 {
+        eprintln!(
+            "reaped stale process groups before daemon start: terminated={}",
+            reaped.terminated
+        );
+    }
     let mut orchestrator = build_orchestrator(config, root, repo_root, cli.dry_run)?;
 
     loop {
-        let report = orchestrator.run_once().await?;
+        let report = tokio::select! {
+            report = orchestrator.run_once() => report?,
+            signal = shutdown_signal() => {
+                let signal = signal?;
+                let report = supervisor.terminate_current_owner()?;
+                eprintln!(
+                    "brunnrd received {signal}; terminated tracked process groups={}",
+                    report.terminated
+                );
+                return Ok(());
+            }
+        };
         println!(
             "{}",
             serde_json::to_string(&json!({
@@ -59,8 +78,13 @@ async fn main() -> Result<()> {
             break;
         }
         tokio::select! {
-            signal = tokio::signal::ctrl_c() => {
-                signal.context("listen for ctrl-c")?;
+            signal = shutdown_signal() => {
+                let signal = signal?;
+                let report = supervisor.terminate_current_owner()?;
+                eprintln!(
+                    "brunnrd received {signal}; terminated tracked process groups={}",
+                    report.terminated
+                );
                 break;
             }
             _ = tokio::time::sleep(Duration::from_millis(cli.interval_millis)) => {}

@@ -10,6 +10,9 @@ license.workspace = true
 [dependencies]
 brunnr-core = { path = "../brunnr-core" }
 futures-util.workspace = true
+nix.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]

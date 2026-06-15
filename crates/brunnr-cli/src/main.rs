@@ -13,7 +13,7 @@ use anyhow::{bail, Context, Result};
 use brunnr_core::{
     Agent, AgentBinding, BrunnrConfig, MemoryBackendKind, MemoryConfig, Mode, Role, SpawnRequest,
 };
-use brunnr_process_agent::{ProcessAgent, ProcessAgentConfig};
+use brunnr_process_agent::{ProcessAgent, ProcessAgentConfig, ProcessSupervisor};
 use clap::{Parser, Subcommand, ValueEnum};
 use mimisbrunnr::{
     default_migration_collection, export_okf_bundle, recover_after_compaction, verify_okf_bundle,
@@ -35,7 +35,10 @@ const MCP_TOOL_HINT: &str =
 mod import;
 mod runtime;
 use import::{import_directory, ImportOptions};
-use runtime::{build_orchestrator, load_config, open_memory_backend};
+use runtime::{
+    build_orchestrator, load_config, open_memory_backend, process_supervisor_from_config,
+    shutdown_signal,
+};
 
 #[derive(Debug, Parser)]
 #[command(name = "brunnr", about = "Multi-agent context orchestration")]
@@ -646,6 +649,14 @@ fn sanitize_project_name(project: &str) -> String {
 async fn spawn(role: &str, agent: &str, args: Vec<String>, timeout_seconds: u64) -> Result<()> {
     let role = Role::from_str(role)?;
     let cwd = env::current_dir()?;
+    let supervisor = ProcessSupervisor::default_for_current_dir();
+    let reaped = supervisor.reap_stale()?;
+    if reaped.terminated > 0 {
+        eprintln!(
+            "reaped stale process groups before spawn: terminated={}",
+            reaped.terminated
+        );
+    }
     let request = SpawnRequest {
         role,
         agent: agent.to_string(),
@@ -656,6 +667,7 @@ async fn spawn(role: &str, agent: &str, args: Vec<String>, timeout_seconds: u64)
         ProcessAgentConfig::new(agent)
             .with_args(args)
             .with_working_dir(cwd)
+            .with_registry_dir(supervisor.registry_dir().to_path_buf())
             .with_timeout(Duration::from_secs(timeout_seconds)),
     );
     let session = process.spawn(request.clone()).await?;
@@ -695,15 +707,45 @@ async fn run_orchestrator(
     }
     let root = root.unwrap_or_else(|| PathBuf::from(&config.memory.root));
     let repo_root = env::current_dir()?;
+    let supervisor = process_supervisor_from_config(&config, &repo_root);
+    let reaped = supervisor.reap_stale()?;
+    if reaped.terminated > 0 {
+        eprintln!(
+            "reaped stale process groups before orchestration: terminated={}",
+            reaped.terminated
+        );
+    }
     let mut orchestrator = build_orchestrator(config, root, repo_root, dry_run)?;
     if once {
-        let report = orchestrator.run_once().await?;
+        let report = tokio::select! {
+            report = orchestrator.run_once() => report?,
+            signal = shutdown_signal() => {
+                let signal = signal?;
+                let report = supervisor.terminate_current_owner()?;
+                eprintln!(
+                    "orchestrator received {signal}; terminated tracked process groups={}",
+                    report.terminated
+                );
+                return Ok(());
+            }
+        };
         println!(
             "orchestrator tick: dispatched={} completed={} blocked={} idle={}",
             report.dispatched, report.completed, report.blocked, report.idle
         );
     } else {
-        let report = orchestrator.run_until_idle(100).await?;
+        let report = tokio::select! {
+            report = orchestrator.run_until_idle(100) => report?,
+            signal = shutdown_signal() => {
+                let signal = signal?;
+                let report = supervisor.terminate_current_owner()?;
+                eprintln!(
+                    "orchestrator received {signal}; terminated tracked process groups={}",
+                    report.terminated
+                );
+                return Ok(());
+            }
+        };
         println!(
             "orchestrator stopped: ticks={} completed={} blocked={} events={}",
             report.ticks,

@@ -118,6 +118,29 @@ mode returns without orchestration side effects. `--dry-run` uses mock agents an
 task planning, dispatch, event emission, verifier gates, and memory writes without launching real
 agent CLIs.
 
+Process-backed agents are supervised. Each worker/judge subprocess is launched in its own process
+group, recorded under `coordination.spawn_registry_path` (default `.brunnr/spawns`), and terminated
+as a whole group on success, timeout, cancellation, verifier rejection, quota exhaustion, SIGINT,
+SIGTERM, or adapter drop. Shutdown is SIGTERM, `coordination.spawn_shutdown_grace_millis` of grace,
+then SIGKILL. Startup reaps registry entries whose owning Brunnr process is no longer alive, so a
+crashed daemon does not leave orphaned agent trees behind.
+
+Spawn ceilings are config-gated:
+
+```toml
+[coordination]
+concurrency_limit = 2
+max_concurrent_spawns = 32
+spawn_max_lifetime_seconds = 1800
+spawn_shutdown_grace_millis = 2000
+spawn_registry_path = ".brunnr/spawns"
+```
+
+`concurrency_limit` controls task dispatch. `max_concurrent_spawns` is the hard process cap enforced
+by the process adapter; new subprocesses are refused once the cap is reached.
+`spawn_max_lifetime_seconds` is a global per-spawn watchdog and is applied in addition to each agent
+binding's `timeout_seconds`.
+
 ## Router — agent routing and tool selection (token-saver)
 
 Two routing problems, one embedding-backed mechanism (reuses Mímisbrunnr's embedder):

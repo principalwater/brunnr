@@ -12,7 +12,7 @@ use std::env;
 
 use anyhow::{bail, Context, Result};
 use brunnr_core::{Agent, AgentBinding, BrunnrConfig, MemoryBackendKind, MemoryConfig, Role};
-use brunnr_process_agent::{ProcessAgent, ProcessAgentConfig};
+use brunnr_process_agent::{ProcessAgent, ProcessAgentConfig, ProcessSupervisor};
 use hvergelmir::ScratchWorkspaceProvider;
 use mimisbrunnr::{
     FilesBackend, MemoryBackend, SqliteVecVectorStore, SqliteVecVectorStoreConfig,
@@ -50,7 +50,7 @@ pub fn build_orchestrator(
             .agents
             .iter()
             .find(|binding| binding.role == Role::Judge)
-            .map(|binding| process_agent_from_binding_value(binding, &repo_root))
+            .map(|binding| process_agent_from_binding_value(&config, binding, &repo_root))
             .transpose()?
             .map(|agent| Arc::new(agent) as Arc<dyn Agent>)
     };
@@ -70,6 +70,47 @@ pub fn load_config(config_path: &Path) -> Result<BrunnrConfig> {
     let text = fs::read_to_string(config_path)
         .with_context(|| format!("read {}", config_path.display()))?;
     BrunnrConfig::from_toml(&text).with_context(|| format!("parse {}", config_path.display()))
+}
+
+pub fn process_supervisor_from_config(
+    config: &BrunnrConfig,
+    repo_root: &Path,
+) -> ProcessSupervisor {
+    ProcessSupervisor::new(spawn_registry_dir(config, repo_root))
+        .with_max_concurrent_spawns(
+            config
+                .coordination
+                .max_concurrent_spawns
+                .unwrap_or(32)
+                .max(1),
+        )
+        .with_termination_grace(Duration::from_millis(
+            config
+                .coordination
+                .spawn_shutdown_grace_millis
+                .unwrap_or(2_000),
+        ))
+}
+
+pub async fn shutdown_signal() -> Result<&'static str> {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+
+        let mut terminate = signal(SignalKind::terminate()).context("listen for sigterm")?;
+        tokio::select! {
+            signal = tokio::signal::ctrl_c() => {
+                signal.context("listen for ctrl-c")?;
+                Ok("SIGINT")
+            }
+            _ = terminate.recv() => Ok("SIGTERM"),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c().await.context("listen for ctrl-c")?;
+        Ok("SIGINT")
+    }
 }
 
 pub fn open_memory_backend(config: &MemoryConfig) -> Result<Arc<dyn MemoryBackend>> {
@@ -114,10 +155,11 @@ fn process_agent_from_binding(
         .iter()
         .find(|binding| binding.role == role)
         .with_context(|| format!("missing agent binding for role {}", role.canonical_alias()))?;
-    process_agent_from_binding_value(binding, repo_root)
+    process_agent_from_binding_value(config, binding, repo_root)
 }
 
 fn process_agent_from_binding_value(
+    config: &BrunnrConfig,
     binding: &AgentBinding,
     repo_root: &Path,
 ) -> Result<ProcessAgent> {
@@ -125,12 +167,47 @@ fn process_agent_from_binding_value(
         .command
         .clone()
         .unwrap_or_else(|| binding.agent.clone());
-    Ok(ProcessAgent::new(
-        ProcessAgentConfig::new(command)
-            .with_args(binding.args.clone())
-            .with_working_dir(repo_root)
-            .with_timeout(Duration::from_secs(binding.timeout_seconds.unwrap_or(120))),
-    ))
+    let process_config = ProcessAgentConfig::new(command)
+        .with_args(binding.args.clone())
+        .with_working_dir(repo_root)
+        .with_timeout(Duration::from_secs(binding.timeout_seconds.unwrap_or(120)))
+        .with_registry_dir(spawn_registry_dir(config, repo_root))
+        .with_max_concurrent_spawns(
+            config
+                .coordination
+                .max_concurrent_spawns
+                .unwrap_or(32)
+                .max(1),
+        )
+        .with_max_lifetime(Duration::from_secs(
+            config
+                .coordination
+                .spawn_max_lifetime_seconds
+                .unwrap_or(30 * 60),
+        ))
+        .with_termination_grace(Duration::from_millis(
+            config
+                .coordination
+                .spawn_shutdown_grace_millis
+                .unwrap_or(2_000),
+        ));
+    Ok(ProcessAgent::new(process_config))
+}
+
+fn spawn_registry_dir(config: &BrunnrConfig, repo_root: &Path) -> PathBuf {
+    config
+        .coordination
+        .spawn_registry_path
+        .as_deref()
+        .map(PathBuf::from)
+        .map(|path| {
+            if path.is_absolute() {
+                path
+            } else {
+                repo_root.join(path)
+            }
+        })
+        .unwrap_or_else(|| repo_root.join(".brunnr").join("spawns"))
 }
 
 #[cfg(feature = "qdrant")]

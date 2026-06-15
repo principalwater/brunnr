@@ -75,6 +75,14 @@ pub struct CoordinationConfig {
     pub verifiers: Vec<VerifierCommandConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub topology: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawn_registry_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_concurrent_spawns: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawn_max_lifetime_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawn_shutdown_grace_millis: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
