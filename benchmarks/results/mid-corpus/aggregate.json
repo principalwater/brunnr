@@ -1,0 +1,1683 @@
+{
+  "suite_version": "seed-honest-v1",
+  "tokenizer": "cl100k_base (tiktoken-rs)",
+  "embedding_model": "intfloat/multilingual-e5-small/384",
+  "backend": "SqliteVecVectorStore via VectorMemoryBackend",
+  "aggregate": {
+    "A-full-replay": {
+      "runs": 80,
+      "success_rate": 1.0,
+      "success_rate_ci95": 0.0,
+      "mean_total_tokens": 477740.0875,
+      "total_tokens_variance": 2.030222,
+      "tokens_per_success": 477740.0875,
+      "mean_retrieval_precision": 0.000156,
+      "mean_retrieval_recall": 1.0,
+      "by_difficulty": {
+        "easy": {
+          "runs": 27,
+          "success_rate": 1.0,
+          "success_rate_ci95": 0.0,
+          "mean_total_tokens": 477740.222222,
+          "total_tokens_variance": 1.794872,
+          "tokens_per_success": 477740.222222,
+          "mean_retrieval_precision": 0.000156,
+          "mean_retrieval_recall": 1.0
+        },
+        "hard": {
+          "runs": 26,
+          "success_rate": 1.0,
+          "success_rate_ci95": 0.0,
+          "mean_total_tokens": 477739.846154,
+          "total_tokens_variance": 2.935385,
+          "tokens_per_success": 477739.846154,
+          "mean_retrieval_precision": 0.000156,
+          "mean_retrieval_recall": 1.0
+        },
+        "medium": {
+          "runs": 27,
+          "success_rate": 1.0,
+          "success_rate_ci95": 0.0,
+          "mean_total_tokens": 477740.185185,
+          "total_tokens_variance": 1.464387,
+          "tokens_per_success": 477740.185185,
+          "mean_retrieval_precision": 0.000156,
+          "mean_retrieval_recall": 1.0
+        }
+      }
+    },
+    "A-full-replay-cold-session": {
+      "runs": 80,
+      "success_rate": 1.0,
+      "success_rate_ci95": 0.0,
+      "mean_total_tokens": 477743.0875,
+      "total_tokens_variance": 2.030222,
+      "tokens_per_success": 477743.0875,
+      "mean_retrieval_precision": 0.000156,
+      "mean_retrieval_recall": 1.0,
+      "by_difficulty": {
+        "easy": {
+          "runs": 27,
+          "success_rate": 1.0,
+          "success_rate_ci95": 0.0,
+          "mean_total_tokens": 477743.222222,
+          "total_tokens_variance": 1.794872,
+          "tokens_per_success": 477743.222222,
+          "mean_retrieval_precision": 0.000156,
+          "mean_retrieval_recall": 1.0
+        },
+        "hard": {
+          "runs": 26,
+          "success_rate": 1.0,
+          "success_rate_ci95": 0.0,
+          "mean_total_tokens": 477742.846154,
+          "total_tokens_variance": 2.935385,
+          "tokens_per_success": 477742.846154,
+          "mean_retrieval_precision": 0.000156,
+          "mean_retrieval_recall": 1.0
+        },
+        "medium": {
+          "runs": 27,
+          "success_rate": 1.0,
+          "success_rate_ci95": 0.0,
+          "mean_total_tokens": 477743.185185,
+          "total_tokens_variance": 1.464387,
+          "tokens_per_success": 477743.185185,
+          "mean_retrieval_precision": 0.000156,
+          "mean_retrieval_recall": 1.0
+        }
+      }
+    },
+    "B-default-brunnr": {
+      "runs": 80,
+      "success_rate": 1.0,
+      "success_rate_ci95": 0.0,
+      "mean_total_tokens": 992.45,
+      "total_tokens_variance": 162.807595,
+      "tokens_per_success": 992.45,
+      "mean_retrieval_precision": 0.333333,
+      "mean_retrieval_recall": 1.0,
+      "by_difficulty": {
+        "easy": {
+          "runs": 27,
+          "success_rate": 1.0,
+          "success_rate_ci95": 0.0,
+          "mean_total_tokens": 991.185185,
+          "total_tokens_variance": 109.77208,
+          "tokens_per_success": 991.185185,
+          "mean_retrieval_precision": 0.333333,
+          "mean_retrieval_recall": 1.0
+        },
+        "hard": {
+          "runs": 26,
+          "success_rate": 1.0,
+          "success_rate_ci95": 0.0,
+          "mean_total_tokens": 993.653846,
+          "total_tokens_variance": 156.715385,
+          "tokens_per_success": 993.653846,
+          "mean_retrieval_precision": 0.333333,
+          "mean_retrieval_recall": 1.0
+        },
+        "medium": {
+          "runs": 27,
+          "success_rate": 1.0,
+          "success_rate_ci95": 0.0,
+          "mean_total_tokens": 992.555556,
+          "total_tokens_variance": 231.102564,
+          "tokens_per_success": 992.555556,
+          "mean_retrieval_precision": 0.333333,
+          "mean_retrieval_recall": 1.0
+        }
+      }
+    },
+    "B-default-brunnr-cold-session": {
+      "runs": 80,
+      "success_rate": 1.0,
+      "success_rate_ci95": 0.0,
+      "mean_total_tokens": 995.45,
+      "total_tokens_variance": 162.807595,
+      "tokens_per_success": 995.45,
+      "mean_retrieval_precision": 0.333333,
+      "mean_retrieval_recall": 1.0,
+      "by_difficulty": {
+        "easy": {
+          "runs": 27,
+          "success_rate": 1.0,
+          "success_rate_ci95": 0.0,
+          "mean_total_tokens": 994.185185,
+          "total_tokens_variance": 109.77208,
+          "tokens_per_success": 994.185185,
+          "mean_retrieval_precision": 0.333333,
+          "mean_retrieval_recall": 1.0
+        },
+        "hard": {
+          "runs": 26,
+          "success_rate": 1.0,
+          "success_rate_ci95": 0.0,
+          "mean_total_tokens": 996.653846,
+          "total_tokens_variance": 156.715385,
+          "tokens_per_success": 996.653846,
+          "mean_retrieval_precision": 0.333333,
+          "mean_retrieval_recall": 1.0
+        },
+        "medium": {
+          "runs": 27,
+          "success_rate": 1.0,
+          "success_rate_ci95": 0.0,
+          "mean_total_tokens": 995.555556,
+          "total_tokens_variance": 231.102564,
+          "tokens_per_success": 995.555556,
+          "mean_retrieval_precision": 0.333333,
+          "mean_retrieval_recall": 1.0
+        }
+      }
+    },
+    "B-plus-debate": {
+      "runs": 80,
+      "success_rate": 1.0,
+      "success_rate_ci95": 0.0,
+      "mean_total_tokens": 1025.5375,
+      "total_tokens_variance": 144.378323,
+      "tokens_per_success": 1025.5375,
+      "mean_retrieval_precision": 0.333333,
+      "mean_retrieval_recall": 1.0,
+      "by_difficulty": {
+        "easy": {
+          "runs": 27,
+          "success_rate": 1.0,
+          "success_rate_ci95": 0.0,
+          "mean_total_tokens": 1024.407407,
+          "total_tokens_variance": 92.481481,
+          "tokens_per_success": 1024.407407,
+          "mean_retrieval_precision": 0.333333,
+          "mean_retrieval_recall": 1.0
+        },
+        "hard": {
+          "runs": 26,
+          "success_rate": 1.0,
+          "success_rate_ci95": 0.0,
+          "mean_total_tokens": 1026.5,
+          "total_tokens_variance": 135.22,
+          "tokens_per_success": 1026.5,
+          "mean_retrieval_precision": 0.333333,
+          "mean_retrieval_recall": 1.0
+        },
+        "medium": {
+          "runs": 27,
+          "success_rate": 1.0,
+          "success_rate_ci95": 0.0,
+          "mean_total_tokens": 1025.740741,
+          "total_tokens_variance": 213.891738,
+          "tokens_per_success": 1025.740741,
+          "mean_retrieval_precision": 0.333333,
+          "mean_retrieval_recall": 1.0
+        }
+      }
+    },
+    "B-plus-hyde": {
+      "runs": 80,
+      "success_rate": 0.8875,
+      "success_rate_ci95": 0.069679,
+      "mean_total_tokens": 1027.5375,
+      "total_tokens_variance": 163.973259,
+      "tokens_per_success": 1157.788732,
+      "mean_retrieval_precision": 0.295833,
+      "mean_retrieval_recall": 0.8875,
+      "by_difficulty": {
+        "easy": {
+          "runs": 27,
+          "success_rate": 0.888889,
+          "success_rate_ci95": 0.120801,
+          "mean_total_tokens": 1029.703704,
+          "total_tokens_variance": 109.831909,
+          "tokens_per_success": 1158.416667,
+          "mean_retrieval_precision": 0.296296,
+          "mean_retrieval_recall": 0.888889
+        },
+        "hard": {
+          "runs": 26,
+          "success_rate": 0.884615,
+          "success_rate_ci95": 0.125238,
+          "mean_total_tokens": 1025.5,
+          "total_tokens_variance": 161.94,
+          "tokens_per_success": 1159.26087,
+          "mean_retrieval_precision": 0.294871,
+          "mean_retrieval_recall": 0.884615
+        },
+        "medium": {
+          "runs": 27,
+          "success_rate": 0.888889,
+          "success_rate_ci95": 0.120801,
+          "mean_total_tokens": 1027.333333,
+          "total_tokens_variance": 223.615385,
+          "tokens_per_success": 1155.75,
+          "mean_retrieval_precision": 0.296296,
+          "mean_retrieval_recall": 0.888889
+        }
+      }
+    },
+    "B-plus-multi-query": {
+      "runs": 80,
+      "success_rate": 1.0,
+      "success_rate_ci95": 0.0,
+      "mean_total_tokens": 1046.0,
+      "total_tokens_variance": 97.392405,
+      "tokens_per_success": 1046.0,
+      "mean_retrieval_precision": 0.333333,
+      "mean_retrieval_recall": 1.0,
+      "by_difficulty": {
+        "easy": {
+          "runs": 27,
+          "success_rate": 1.0,
+          "success_rate_ci95": 0.0,
+          "mean_total_tokens": 1045.592593,
+          "total_tokens_variance": 53.866097,
+          "tokens_per_success": 1045.592593,
+          "mean_retrieval_precision": 0.333333,
+          "mean_retrieval_recall": 1.0
+        },
+        "hard": {
+          "runs": 26,
+          "success_rate": 1.0,
+          "success_rate_ci95": 0.0,
+          "mean_total_tokens": 1047.346154,
+          "total_tokens_variance": 85.915385,
+          "tokens_per_success": 1047.346154,
+          "mean_retrieval_precision": 0.333333,
+          "mean_retrieval_recall": 1.0
+        },
+        "medium": {
+          "runs": 27,
+          "success_rate": 1.0,
+          "success_rate_ci95": 0.0,
+          "mean_total_tokens": 1045.111111,
+          "total_tokens_variance": 156.641026,
+          "tokens_per_success": 1045.111111,
+          "mean_retrieval_precision": 0.333333,
+          "mean_retrieval_recall": 1.0
+        }
+      }
+    },
+    "B-reflection-consolidated": {
+      "runs": 80,
+      "success_rate": 1.0,
+      "success_rate_ci95": 0.0,
+      "mean_total_tokens": 9340.225,
+      "total_tokens_variance": 190.227215,
+      "tokens_per_success": 9340.225,
+      "mean_retrieval_precision": 0.333333,
+      "mean_retrieval_recall": 1.0,
+      "by_difficulty": {
+        "easy": {
+          "runs": 27,
+          "success_rate": 1.0,
+          "success_rate_ci95": 0.0,
+          "mean_total_tokens": 9336.851852,
+          "total_tokens_variance": 146.438746,
+          "tokens_per_success": 9336.851852,
+          "mean_retrieval_precision": 0.333333,
+          "mean_retrieval_recall": 1.0
+        },
+        "hard": {
+          "runs": 26,
+          "success_rate": 1.0,
+          "success_rate_ci95": 0.0,
+          "mean_total_tokens": 9340.346154,
+          "total_tokens_variance": 208.955385,
+          "tokens_per_success": 9340.346154,
+          "mean_retrieval_precision": 0.333333,
+          "mean_retrieval_recall": 1.0
+        },
+        "medium": {
+          "runs": 27,
+          "success_rate": 1.0,
+          "success_rate_ci95": 0.0,
+          "mean_total_tokens": 9343.481481,
+          "total_tokens_variance": 207.797721,
+          "tokens_per_success": 9343.481481,
+          "mean_retrieval_precision": 0.333333,
+          "mean_retrieval_recall": 1.0
+        }
+      }
+    },
+    "C-built-in-agent-memory": {
+      "runs": 80,
+      "success_rate": 0.8,
+      "success_rate_ci95": 0.088207,
+      "mean_total_tokens": 124.625,
+      "total_tokens_variance": 42.186709,
+      "tokens_per_success": 155.78125,
+      "mean_retrieval_precision": 0.8,
+      "mean_retrieval_recall": 0.8,
+      "by_difficulty": {
+        "easy": {
+          "runs": 27,
+          "success_rate": 0.666667,
+          "success_rate_ci95": 0.181202,
+          "mean_total_tokens": 122.555556,
+          "total_tokens_variance": 51.871795,
+          "tokens_per_success": 183.833333,
+          "mean_retrieval_precision": 0.666667,
+          "mean_retrieval_recall": 0.666667
+        },
+        "hard": {
+          "runs": 26,
+          "success_rate": 0.884615,
+          "success_rate_ci95": 0.125238,
+          "mean_total_tokens": 126.038462,
+          "total_tokens_variance": 12.278462,
+          "tokens_per_success": 142.478261,
+          "mean_retrieval_precision": 0.884615,
+          "mean_retrieval_recall": 0.884615
+        },
+        "medium": {
+          "runs": 27,
+          "success_rate": 0.851852,
+          "success_rate_ci95": 0.136552,
+          "mean_total_tokens": 125.333333,
+          "total_tokens_variance": 57.538462,
+          "tokens_per_success": 147.130435,
+          "mean_retrieval_precision": 0.851852,
+          "mean_retrieval_recall": 0.851852
+        }
+      }
+    },
+    "D-no-memory": {
+      "runs": 80,
+      "success_rate": 0.0,
+      "success_rate_ci95": 0.0,
+      "mean_total_tokens": 56.0875,
+      "total_tokens_variance": 2.030222,
+      "tokens_per_success": null,
+      "mean_retrieval_precision": 0.0,
+      "mean_retrieval_recall": 0.0,
+      "by_difficulty": {
+        "easy": {
+          "runs": 27,
+          "success_rate": 0.0,
+          "success_rate_ci95": 0.0,
+          "mean_total_tokens": 56.222222,
+          "total_tokens_variance": 1.794872,
+          "tokens_per_success": null,
+          "mean_retrieval_precision": 0.0,
+          "mean_retrieval_recall": 0.0
+        },
+        "hard": {
+          "runs": 26,
+          "success_rate": 0.0,
+          "success_rate_ci95": 0.0,
+          "mean_total_tokens": 55.846154,
+          "total_tokens_variance": 2.935385,
+          "tokens_per_success": null,
+          "mean_retrieval_precision": 0.0,
+          "mean_retrieval_recall": 0.0
+        },
+        "medium": {
+          "runs": 27,
+          "success_rate": 0.0,
+          "success_rate_ci95": 0.0,
+          "mean_total_tokens": 56.185185,
+          "total_tokens_variance": 1.464387,
+          "tokens_per_success": null,
+          "mean_retrieval_precision": 0.0,
+          "mean_retrieval_recall": 0.0
+        }
+      }
+    }
+  },
+  "retrieval_misses": [
+    {
+      "arm": "B-plus-hyde",
+      "task_id": "mid-02-export-service-20",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/export-service-20.md"
+      ],
+      "retrieved_docs": [
+        "distractors/naming-guide.md",
+        "distractors/quota-overview.md",
+        "memory/analytics-api.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "B-plus-hyde",
+      "task_id": "mid-31-orders-gateway-4",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/orders-gateway-4.md"
+      ],
+      "retrieved_docs": [
+        "distractors/naming-guide.md",
+        "memory/messaging-gateway-4.md",
+        "memory/reporting-gateway-4.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "B-plus-hyde",
+      "task_id": "mid-36-feeds-service-9",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/feeds-service-9.md"
+      ],
+      "retrieved_docs": [
+        "memory/analytics-gateway.md",
+        "memory/archive-api.md",
+        "memory/feeds-gateway-9.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "B-plus-hyde",
+      "task_id": "mid-42-webhooks-worker-10",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/webhooks-worker-10.md"
+      ],
+      "retrieved_docs": [
+        "distractors/naming-guide.md",
+        "distractors/quota-overview.md",
+        "memory/analytics-api.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "B-plus-hyde",
+      "task_id": "mid-50-scheduling-processor-10",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/scheduling-processor-10.md"
+      ],
+      "retrieved_docs": [
+        "distractors/naming-guide.md",
+        "distractors/quota-overview.md",
+        "memory/analytics-api.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "B-plus-hyde",
+      "task_id": "mid-61-shipping-indexer-18",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/shipping-indexer-18.md"
+      ],
+      "retrieved_docs": [
+        "distractors/naming-guide.md",
+        "distractors/quota-overview.md",
+        "memory/analytics-api.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "B-plus-hyde",
+      "task_id": "mid-63-orders-scheduler-7",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/orders-scheduler-7.md"
+      ],
+      "retrieved_docs": [
+        "distractors/naming-guide.md",
+        "memory/analytics-indexer.md",
+        "memory/scheduling-api-7.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "B-plus-hyde",
+      "task_id": "mid-64-scheduling-processor-5",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/scheduling-processor-5.md"
+      ],
+      "retrieved_docs": [
+        "distractors/naming-guide.md",
+        "distractors/quota-overview.md",
+        "memory/analytics-api.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "B-plus-hyde",
+      "task_id": "mid-65-feeds-scheduler-5",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/feeds-scheduler-5.md"
+      ],
+      "retrieved_docs": [
+        "distractors/naming-guide.md",
+        "memory/analytics-indexer.md",
+        "memory/analytics-service.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "C-built-in-agent-memory",
+      "task_id": "mid-03-payments-gateway-14",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/payments-gateway-14.md"
+      ],
+      "retrieved_docs": [
+        "distractors/naming-guide.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "C-built-in-agent-memory",
+      "task_id": "mid-06-audit-indexer-16",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/audit-indexer-16.md"
+      ],
+      "retrieved_docs": [
+        "memory/import-indexer-16.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "C-built-in-agent-memory",
+      "task_id": "mid-21-analytics-processor",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/analytics-processor.md"
+      ],
+      "retrieved_docs": [
+        "memory/pricing-processor-17.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "C-built-in-agent-memory",
+      "task_id": "mid-25-inventory-processor",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/inventory-processor.md"
+      ],
+      "retrieved_docs": [
+        "distractors/naming-guide.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "C-built-in-agent-memory",
+      "task_id": "mid-26-archive-worker-6",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/archive-worker-6.md"
+      ],
+      "retrieved_docs": [
+        "memory/import-worker-6.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "C-built-in-agent-memory",
+      "task_id": "mid-27-loyalty-indexer-4",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/loyalty-indexer-4.md"
+      ],
+      "retrieved_docs": [
+        "distractors/naming-guide.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "C-built-in-agent-memory",
+      "task_id": "mid-30-analytics-processor-2",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/analytics-processor-2.md"
+      ],
+      "retrieved_docs": [
+        "distractors/naming-guide.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "C-built-in-agent-memory",
+      "task_id": "mid-33-import-gateway-7",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/import-gateway-7.md"
+      ],
+      "retrieved_docs": [
+        "distractors/naming-guide.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "C-built-in-agent-memory",
+      "task_id": "mid-37-translation-processor-10",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/translation-processor-10.md"
+      ],
+      "retrieved_docs": [
+        "distractors/naming-guide.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "C-built-in-agent-memory",
+      "task_id": "mid-42-webhooks-worker-10",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/webhooks-worker-10.md"
+      ],
+      "retrieved_docs": [
+        "distractors/naming-guide.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "C-built-in-agent-memory",
+      "task_id": "mid-45-gateway-api-12",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/gateway-api-12.md"
+      ],
+      "retrieved_docs": [
+        "distractors/naming-guide.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "C-built-in-agent-memory",
+      "task_id": "mid-55-webhooks-scheduler-22",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/webhooks-scheduler-22.md"
+      ],
+      "retrieved_docs": [
+        "distractors/naming-guide.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "C-built-in-agent-memory",
+      "task_id": "mid-62-catalog-gateway-9",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/catalog-gateway-9.md"
+      ],
+      "retrieved_docs": [
+        "memory/gateway-gateway-9.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "C-built-in-agent-memory",
+      "task_id": "mid-64-scheduling-processor-5",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/scheduling-processor-5.md"
+      ],
+      "retrieved_docs": [
+        "distractors/naming-guide.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "C-built-in-agent-memory",
+      "task_id": "mid-66-audit-service-9",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/audit-service-9.md"
+      ],
+      "retrieved_docs": [
+        "memory/gateway-service-9.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "C-built-in-agent-memory",
+      "task_id": "mid-77-auth-service",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/auth-service.md"
+      ],
+      "retrieved_docs": [
+        "memory/identity-service.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-00-loyalty-api-13",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/loyalty-api-13.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-01-media-processor-4",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/media-processor-4.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-02-export-service-20",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/export-service-20.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-03-payments-gateway-14",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/payments-gateway-14.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-04-moderation-scheduler-4",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/moderation-scheduler-4.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-05-orders-processor-9",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/orders-processor-9.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-06-audit-indexer-16",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/audit-indexer-16.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-07-notifications-gateway-20",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/notifications-gateway-20.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-08-archive-api-15",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/archive-api-15.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-09-subscriptions-gateway-4",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/subscriptions-gateway-4.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-10-media-indexer-21",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/media-indexer-21.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-11-reporting-processor-16",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/reporting-processor-16.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-12-moderation-scheduler-14",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/moderation-scheduler-14.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-13-media-processor-7",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/media-processor-7.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-14-webhooks-gateway-16",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/webhooks-gateway-16.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-15-identity-api-6",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/identity-api-6.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-16-geocoding-processor-6",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/geocoding-processor-6.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-17-identity-gateway-4",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/identity-gateway-4.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-18-media-api-21",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/media-api-21.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-19-wallet-worker-10",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/wallet-worker-10.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-20-loyalty-api-4",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/loyalty-api-4.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-21-analytics-processor",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/analytics-processor.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-22-recommendations-service-13",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/recommendations-service-13.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-23-loyalty-processor-18",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/loyalty-processor-18.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-24-billing-worker-13",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/billing-worker-13.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-25-inventory-processor",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/inventory-processor.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-26-archive-worker-6",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/archive-worker-6.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-27-loyalty-indexer-4",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/loyalty-indexer-4.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-28-metering-api-2",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/metering-api-2.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-29-media-gateway-19",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/media-gateway-19.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-30-analytics-processor-2",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/analytics-processor-2.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-31-orders-gateway-4",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/orders-gateway-4.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-32-refunds-worker-18",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/refunds-worker-18.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-33-import-gateway-7",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/import-gateway-7.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-34-shipping-api-10",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/shipping-api-10.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-35-audit-indexer-13",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/audit-indexer-13.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-36-feeds-service-9",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/feeds-service-9.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-37-translation-processor-10",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/translation-processor-10.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-38-wallet-api-19",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/wallet-api-19.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-39-feeds-processor-11",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/feeds-processor-11.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-40-moderation-worker-3",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/moderation-worker-3.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-41-search-api-14",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/search-api-14.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-42-webhooks-worker-10",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/webhooks-worker-10.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-43-recommendations-gateway-11",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/recommendations-gateway-11.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-44-catalog-worker-11",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/catalog-worker-11.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-45-gateway-api-12",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/gateway-api-12.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-46-reporting-indexer-3",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/reporting-indexer-3.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-47-auth-processor-21",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/auth-processor-21.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-48-inventory-api-15",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/inventory-api-15.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-49-messaging-indexer-17",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/messaging-indexer-17.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-50-scheduling-processor-10",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/scheduling-processor-10.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-51-archive-indexer-18",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/archive-indexer-18.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-52-sync-gateway-7",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/sync-gateway-7.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-53-messaging-gateway-22",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/messaging-gateway-22.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-54-gateway-scheduler-18",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/gateway-scheduler-18.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-55-webhooks-scheduler-22",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/webhooks-scheduler-22.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-56-recommendations-api-13",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/recommendations-api-13.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-57-geocoding-service",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/geocoding-service.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-58-reviews-service-19",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/reviews-service-19.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-59-loyalty-service-18",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/loyalty-service-18.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-60-reviews-scheduler-18",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/reviews-scheduler-18.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-61-shipping-indexer-18",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/shipping-indexer-18.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-62-catalog-gateway-9",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/catalog-gateway-9.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-63-orders-scheduler-7",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/orders-scheduler-7.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-64-scheduling-processor-5",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/scheduling-processor-5.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-65-feeds-scheduler-5",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/feeds-scheduler-5.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-66-audit-service-9",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/audit-service-9.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-67-notifications-indexer-10",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/notifications-indexer-10.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-68-subscriptions-service-17",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/subscriptions-service-17.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-69-import-worker-6",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/import-worker-6.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-70-routing-worker-8",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/routing-worker-8.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-71-media-indexer-3",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/media-indexer-3.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-72-pricing-indexer-16",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/pricing-indexer-16.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-73-routing-gateway-18",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/routing-gateway-18.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-74-inventory-worker-22",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/inventory-worker-22.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-75-media-service-15",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/media-service-15.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-76-gateway-service-10",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/gateway-service-10.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-77-auth-service",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/auth-service.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-78-geocoding-service-10",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/geocoding-service-10.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "mid-79-gateway-service-13",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/gateway-service-13.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    }
+  ],
+  "marginal_verdicts": {
+    "B-plus-debate": {
+      "tokens_per_success_delta_vs_b": 33.0875,
+      "success_rate_delta_vs_b": 0.0,
+      "precision_delta_vs_b": 0.0,
+      "recall_delta_vs_b": 0.0,
+      "verdict": "skip by default; no measured quality gain over B-default in this sample"
+    },
+    "B-plus-hyde": {
+      "tokens_per_success_delta_vs_b": 165.338732,
+      "success_rate_delta_vs_b": -0.1125,
+      "precision_delta_vs_b": -0.0375,
+      "recall_delta_vs_b": -0.1125,
+      "verdict": "skip by default; no measured quality gain over B-default in this sample"
+    },
+    "B-plus-multi-query": {
+      "tokens_per_success_delta_vs_b": 53.55,
+      "success_rate_delta_vs_b": 0.0,
+      "precision_delta_vs_b": 0.0,
+      "recall_delta_vs_b": 0.0,
+      "verdict": "skip by default; no measured quality gain over B-default in this sample"
+    },
+    "B-reflection-consolidated": {
+      "tokens_per_success_delta_vs_b": 8347.775,
+      "success_rate_delta_vs_b": 0.0,
+      "precision_delta_vs_b": 0.0,
+      "recall_delta_vs_b": 0.0,
+      "verdict": "skip by default; no measured quality gain over B-default in this sample"
+    }
+  }
+}

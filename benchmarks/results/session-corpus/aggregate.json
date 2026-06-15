@@ -1,0 +1,1633 @@
+{
+  "suite_version": "seed-honest-v1",
+  "tokenizer": "cl100k_base (tiktoken-rs)",
+  "embedding_model": "intfloat/multilingual-e5-small/384",
+  "backend": "SqliteVecVectorStore via VectorMemoryBackend",
+  "aggregate": {
+    "A-full-replay": {
+      "runs": 60,
+      "success_rate": 1.0,
+      "success_rate_ci95": 0.0,
+      "mean_total_tokens": 118565.716667,
+      "total_tokens_variance": 2.443785,
+      "tokens_per_success": 118565.716667,
+      "mean_retrieval_precision": 0.000622,
+      "mean_retrieval_recall": 1.0,
+      "by_difficulty": {
+        "easy": {
+          "runs": 20,
+          "success_rate": 1.0,
+          "success_rate_ci95": 0.0,
+          "mean_total_tokens": 118565.9,
+          "total_tokens_variance": 2.094737,
+          "tokens_per_success": 118565.9,
+          "mean_retrieval_precision": 0.000622,
+          "mean_retrieval_recall": 1.0
+        },
+        "hard": {
+          "runs": 20,
+          "success_rate": 1.0,
+          "success_rate_ci95": 0.0,
+          "mean_total_tokens": 118566.0,
+          "total_tokens_variance": 2.105263,
+          "tokens_per_success": 118566.0,
+          "mean_retrieval_precision": 0.000622,
+          "mean_retrieval_recall": 1.0
+        },
+        "medium": {
+          "runs": 20,
+          "success_rate": 1.0,
+          "success_rate_ci95": 0.0,
+          "mean_total_tokens": 118565.25,
+          "total_tokens_variance": 3.039474,
+          "tokens_per_success": 118565.25,
+          "mean_retrieval_precision": 0.000622,
+          "mean_retrieval_recall": 1.0
+        }
+      }
+    },
+    "A-full-replay-cold-session": {
+      "runs": 60,
+      "success_rate": 1.0,
+      "success_rate_ci95": 0.0,
+      "mean_total_tokens": 118568.716667,
+      "total_tokens_variance": 2.443785,
+      "tokens_per_success": 118568.716667,
+      "mean_retrieval_precision": 0.000622,
+      "mean_retrieval_recall": 1.0,
+      "by_difficulty": {
+        "easy": {
+          "runs": 20,
+          "success_rate": 1.0,
+          "success_rate_ci95": 0.0,
+          "mean_total_tokens": 118568.9,
+          "total_tokens_variance": 2.094737,
+          "tokens_per_success": 118568.9,
+          "mean_retrieval_precision": 0.000622,
+          "mean_retrieval_recall": 1.0
+        },
+        "hard": {
+          "runs": 20,
+          "success_rate": 1.0,
+          "success_rate_ci95": 0.0,
+          "mean_total_tokens": 118569.0,
+          "total_tokens_variance": 2.105263,
+          "tokens_per_success": 118569.0,
+          "mean_retrieval_precision": 0.000622,
+          "mean_retrieval_recall": 1.0
+        },
+        "medium": {
+          "runs": 20,
+          "success_rate": 1.0,
+          "success_rate_ci95": 0.0,
+          "mean_total_tokens": 118568.25,
+          "total_tokens_variance": 3.039474,
+          "tokens_per_success": 118568.25,
+          "mean_retrieval_precision": 0.000622,
+          "mean_retrieval_recall": 1.0
+        }
+      }
+    },
+    "B-default-brunnr": {
+      "runs": 60,
+      "success_rate": 1.0,
+      "success_rate_ci95": 0.0,
+      "mean_total_tokens": 973.6,
+      "total_tokens_variance": 243.532203,
+      "tokens_per_success": 973.6,
+      "mean_retrieval_precision": 0.333333,
+      "mean_retrieval_recall": 1.0,
+      "by_difficulty": {
+        "easy": {
+          "runs": 20,
+          "success_rate": 1.0,
+          "success_rate_ci95": 0.0,
+          "mean_total_tokens": 969.5,
+          "total_tokens_variance": 252.578947,
+          "tokens_per_success": 969.5,
+          "mean_retrieval_precision": 0.333333,
+          "mean_retrieval_recall": 1.0
+        },
+        "hard": {
+          "runs": 20,
+          "success_rate": 1.0,
+          "success_rate_ci95": 0.0,
+          "mean_total_tokens": 975.3,
+          "total_tokens_variance": 241.694737,
+          "tokens_per_success": 975.3,
+          "mean_retrieval_precision": 0.333333,
+          "mean_retrieval_recall": 1.0
+        },
+        "medium": {
+          "runs": 20,
+          "success_rate": 1.0,
+          "success_rate_ci95": 0.0,
+          "mean_total_tokens": 976.0,
+          "total_tokens_variance": 235.157895,
+          "tokens_per_success": 976.0,
+          "mean_retrieval_precision": 0.333333,
+          "mean_retrieval_recall": 1.0
+        }
+      }
+    },
+    "B-default-brunnr-cold-session": {
+      "runs": 60,
+      "success_rate": 1.0,
+      "success_rate_ci95": 0.0,
+      "mean_total_tokens": 976.6,
+      "total_tokens_variance": 243.532203,
+      "tokens_per_success": 976.6,
+      "mean_retrieval_precision": 0.333333,
+      "mean_retrieval_recall": 1.0,
+      "by_difficulty": {
+        "easy": {
+          "runs": 20,
+          "success_rate": 1.0,
+          "success_rate_ci95": 0.0,
+          "mean_total_tokens": 972.5,
+          "total_tokens_variance": 252.578947,
+          "tokens_per_success": 972.5,
+          "mean_retrieval_precision": 0.333333,
+          "mean_retrieval_recall": 1.0
+        },
+        "hard": {
+          "runs": 20,
+          "success_rate": 1.0,
+          "success_rate_ci95": 0.0,
+          "mean_total_tokens": 978.3,
+          "total_tokens_variance": 241.694737,
+          "tokens_per_success": 978.3,
+          "mean_retrieval_precision": 0.333333,
+          "mean_retrieval_recall": 1.0
+        },
+        "medium": {
+          "runs": 20,
+          "success_rate": 1.0,
+          "success_rate_ci95": 0.0,
+          "mean_total_tokens": 979.0,
+          "total_tokens_variance": 235.157895,
+          "tokens_per_success": 979.0,
+          "mean_retrieval_precision": 0.333333,
+          "mean_retrieval_recall": 1.0
+        }
+      }
+    },
+    "B-plus-debate": {
+      "runs": 60,
+      "success_rate": 1.0,
+      "success_rate_ci95": 0.0,
+      "mean_total_tokens": 1006.316667,
+      "total_tokens_variance": 230.389548,
+      "tokens_per_success": 1006.316667,
+      "mean_retrieval_precision": 0.333333,
+      "mean_retrieval_recall": 1.0,
+      "by_difficulty": {
+        "easy": {
+          "runs": 20,
+          "success_rate": 1.0,
+          "success_rate_ci95": 0.0,
+          "mean_total_tokens": 1002.4,
+          "total_tokens_variance": 234.147368,
+          "tokens_per_success": 1002.4,
+          "mean_retrieval_precision": 0.333333,
+          "mean_retrieval_recall": 1.0
+        },
+        "hard": {
+          "runs": 20,
+          "success_rate": 1.0,
+          "success_rate_ci95": 0.0,
+          "mean_total_tokens": 1008.3,
+          "total_tokens_variance": 231.8,
+          "tokens_per_success": 1008.3,
+          "mean_retrieval_precision": 0.333333,
+          "mean_retrieval_recall": 1.0
+        },
+        "medium": {
+          "runs": 20,
+          "success_rate": 1.0,
+          "success_rate_ci95": 0.0,
+          "mean_total_tokens": 1008.25,
+          "total_tokens_variance": 225.25,
+          "tokens_per_success": 1008.25,
+          "mean_retrieval_precision": 0.333333,
+          "mean_retrieval_recall": 1.0
+        }
+      }
+    },
+    "B-plus-hyde": {
+      "runs": 60,
+      "success_rate": 0.816667,
+      "success_rate_ci95": 0.098736,
+      "mean_total_tokens": 1009.616667,
+      "total_tokens_variance": 159.528531,
+      "tokens_per_success": 1236.265306,
+      "mean_retrieval_precision": 0.272222,
+      "mean_retrieval_recall": 0.816667,
+      "by_difficulty": {
+        "easy": {
+          "runs": 20,
+          "success_rate": 0.85,
+          "success_rate_ci95": 0.160559,
+          "mean_total_tokens": 1004.6,
+          "total_tokens_variance": 183.305263,
+          "tokens_per_success": 1181.882353,
+          "mean_retrieval_precision": 0.283333,
+          "mean_retrieval_recall": 0.85
+        },
+        "hard": {
+          "runs": 20,
+          "success_rate": 0.8,
+          "success_rate_ci95": 0.179862,
+          "mean_total_tokens": 1015.25,
+          "total_tokens_variance": 123.25,
+          "tokens_per_success": 1269.0625,
+          "mean_retrieval_precision": 0.266666,
+          "mean_retrieval_recall": 0.8
+        },
+        "medium": {
+          "runs": 20,
+          "success_rate": 0.8,
+          "success_rate_ci95": 0.179862,
+          "mean_total_tokens": 1009.0,
+          "total_tokens_variance": 128.526316,
+          "tokens_per_success": 1261.25,
+          "mean_retrieval_precision": 0.266666,
+          "mean_retrieval_recall": 0.8
+        }
+      }
+    },
+    "B-plus-multi-query": {
+      "runs": 60,
+      "success_rate": 0.916667,
+      "success_rate_ci95": 0.070526,
+      "mean_total_tokens": 1026.983333,
+      "total_tokens_variance": 177.94887,
+      "tokens_per_success": 1120.345455,
+      "mean_retrieval_precision": 0.305555,
+      "mean_retrieval_recall": 0.916667,
+      "by_difficulty": {
+        "easy": {
+          "runs": 20,
+          "success_rate": 0.8,
+          "success_rate_ci95": 0.179862,
+          "mean_total_tokens": 1024.75,
+          "total_tokens_variance": 141.776316,
+          "tokens_per_success": 1280.9375,
+          "mean_retrieval_precision": 0.266666,
+          "mean_retrieval_recall": 0.8
+        },
+        "hard": {
+          "runs": 20,
+          "success_rate": 0.95,
+          "success_rate_ci95": 0.098,
+          "mean_total_tokens": 1028.75,
+          "total_tokens_variance": 181.881579,
+          "tokens_per_success": 1082.894737,
+          "mean_retrieval_precision": 0.316666,
+          "mean_retrieval_recall": 0.95
+        },
+        "medium": {
+          "runs": 20,
+          "success_rate": 1.0,
+          "success_rate_ci95": 0.0,
+          "mean_total_tokens": 1027.45,
+          "total_tokens_variance": 220.155263,
+          "tokens_per_success": 1027.45,
+          "mean_retrieval_precision": 0.333333,
+          "mean_retrieval_recall": 1.0
+        }
+      }
+    },
+    "B-reflection-consolidated": {
+      "runs": 60,
+      "success_rate": 1.0,
+      "success_rate_ci95": 0.0,
+      "mean_total_tokens": 3685.566667,
+      "total_tokens_variance": 188.487006,
+      "tokens_per_success": 3685.566667,
+      "mean_retrieval_precision": 0.333333,
+      "mean_retrieval_recall": 1.0,
+      "by_difficulty": {
+        "easy": {
+          "runs": 20,
+          "success_rate": 1.0,
+          "success_rate_ci95": 0.0,
+          "mean_total_tokens": 3683.15,
+          "total_tokens_variance": 150.871053,
+          "tokens_per_success": 3683.15,
+          "mean_retrieval_precision": 0.333333,
+          "mean_retrieval_recall": 1.0
+        },
+        "hard": {
+          "runs": 20,
+          "success_rate": 1.0,
+          "success_rate_ci95": 0.0,
+          "mean_total_tokens": 3685.55,
+          "total_tokens_variance": 251.313158,
+          "tokens_per_success": 3685.55,
+          "mean_retrieval_precision": 0.333333,
+          "mean_retrieval_recall": 1.0
+        },
+        "medium": {
+          "runs": 20,
+          "success_rate": 1.0,
+          "success_rate_ci95": 0.0,
+          "mean_total_tokens": 3688.0,
+          "total_tokens_variance": 170.736842,
+          "tokens_per_success": 3688.0,
+          "mean_retrieval_precision": 0.333333,
+          "mean_retrieval_recall": 1.0
+        }
+      }
+    },
+    "C-built-in-agent-memory": {
+      "runs": 60,
+      "success_rate": 0.65,
+      "success_rate_ci95": 0.121708,
+      "mean_total_tokens": 124.416667,
+      "total_tokens_variance": 55.637006,
+      "tokens_per_success": 191.410256,
+      "mean_retrieval_precision": 0.65,
+      "mean_retrieval_recall": 0.65,
+      "by_difficulty": {
+        "easy": {
+          "runs": 20,
+          "success_rate": 0.7,
+          "success_rate_ci95": 0.206058,
+          "mean_total_tokens": 123.3,
+          "total_tokens_variance": 51.484211,
+          "tokens_per_success": 176.142857,
+          "mean_retrieval_precision": 0.7,
+          "mean_retrieval_recall": 0.7
+        },
+        "hard": {
+          "runs": 20,
+          "success_rate": 0.55,
+          "success_rate_ci95": 0.2237,
+          "mean_total_tokens": 125.45,
+          "total_tokens_variance": 69.102632,
+          "tokens_per_success": 228.090909,
+          "mean_retrieval_precision": 0.55,
+          "mean_retrieval_recall": 0.55
+        },
+        "medium": {
+          "runs": 20,
+          "success_rate": 0.7,
+          "success_rate_ci95": 0.206058,
+          "mean_total_tokens": 124.5,
+          "total_tokens_variance": 49.736842,
+          "tokens_per_success": 177.857143,
+          "mean_retrieval_precision": 0.7,
+          "mean_retrieval_recall": 0.7
+        }
+      }
+    },
+    "D-no-memory": {
+      "runs": 60,
+      "success_rate": 0.0,
+      "success_rate_ci95": 0.0,
+      "mean_total_tokens": 55.716667,
+      "total_tokens_variance": 2.443785,
+      "tokens_per_success": null,
+      "mean_retrieval_precision": 0.0,
+      "mean_retrieval_recall": 0.0,
+      "by_difficulty": {
+        "easy": {
+          "runs": 20,
+          "success_rate": 0.0,
+          "success_rate_ci95": 0.0,
+          "mean_total_tokens": 55.9,
+          "total_tokens_variance": 2.094737,
+          "tokens_per_success": null,
+          "mean_retrieval_precision": 0.0,
+          "mean_retrieval_recall": 0.0
+        },
+        "hard": {
+          "runs": 20,
+          "success_rate": 0.0,
+          "success_rate_ci95": 0.0,
+          "mean_total_tokens": 56.0,
+          "total_tokens_variance": 2.105263,
+          "tokens_per_success": null,
+          "mean_retrieval_precision": 0.0,
+          "mean_retrieval_recall": 0.0
+        },
+        "medium": {
+          "runs": 20,
+          "success_rate": 0.0,
+          "success_rate_ci95": 0.0,
+          "mean_total_tokens": 55.25,
+          "total_tokens_variance": 3.039474,
+          "tokens_per_success": null,
+          "mean_retrieval_precision": 0.0,
+          "mean_retrieval_recall": 0.0
+        }
+      }
+    }
+  },
+  "retrieval_misses": [
+    {
+      "arm": "B-plus-hyde",
+      "task_id": "session-07-scheduling-service-5",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/scheduling-service-5.md"
+      ],
+      "retrieved_docs": [
+        "distractors/naming-guide.md",
+        "distractors/quota-overview.md",
+        "memory/analytics-api.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "B-plus-hyde",
+      "task_id": "session-08-geocoding-processor-4",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/geocoding-processor-4.md"
+      ],
+      "retrieved_docs": [
+        "distractors/naming-guide.md",
+        "memory/recommendations-processor-4.md",
+        "memory/reporting-gateway-4.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "B-plus-hyde",
+      "task_id": "session-13-import-api-2",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/import-api-2.md"
+      ],
+      "retrieved_docs": [
+        "distractors/naming-guide.md",
+        "memory/translation-gateway-2.md",
+        "memory/translation-processor-2.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "B-plus-hyde",
+      "task_id": "session-14-ledger-gateway-4",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/ledger-gateway-4.md"
+      ],
+      "retrieved_docs": [
+        "distractors/naming-guide.md",
+        "memory/recommendations-gateway-4.md",
+        "memory/translation-gateway-4.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "B-plus-hyde",
+      "task_id": "session-18-pricing-service-6",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/pricing-service-6.md"
+      ],
+      "retrieved_docs": [
+        "distractors/naming-guide.md",
+        "distractors/quota-overview.md",
+        "memory/analytics-api.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "B-plus-hyde",
+      "task_id": "session-32-ledger-indexer-5",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/ledger-indexer-5.md"
+      ],
+      "retrieved_docs": [
+        "distractors/naming-guide.md",
+        "memory/reporting-indexer-5.md",
+        "memory/wallet-indexer-5.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "B-plus-hyde",
+      "task_id": "session-33-ingestion-processor-2",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/ingestion-processor-2.md"
+      ],
+      "retrieved_docs": [
+        "distractors/naming-guide.md",
+        "memory/recommendations-processor-2.md",
+        "memory/reporting-indexer-2.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "B-plus-hyde",
+      "task_id": "session-34-ledger-indexer-3",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/ledger-indexer-3.md"
+      ],
+      "retrieved_docs": [
+        "distractors/naming-guide.md",
+        "memory/reporting-indexer-3.md",
+        "memory/wallet-indexer-3.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "B-plus-hyde",
+      "task_id": "session-47-geocoding-gateway-6",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/geocoding-gateway-6.md"
+      ],
+      "retrieved_docs": [
+        "distractors/naming-guide.md",
+        "memory/reporting-gateway-5.md",
+        "memory/reporting-gateway.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "B-plus-hyde",
+      "task_id": "session-48-billing-processor-4",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/billing-processor-4.md"
+      ],
+      "retrieved_docs": [
+        "distractors/naming-guide.md",
+        "distractors/quota-overview.md",
+        "memory/translation-processor-4.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "B-plus-hyde",
+      "task_id": "session-55-export-scheduler-6",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/export-scheduler-6.md"
+      ],
+      "retrieved_docs": [
+        "memory/analytics-gateway.md",
+        "memory/archive-api.md",
+        "memory/scheduling-gateway-6.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "B-plus-multi-query",
+      "task_id": "session-00-export-worker-4",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/export-worker-4.md"
+      ],
+      "retrieved_docs": [
+        "memory/scheduling-indexer-2.md",
+        "memory/scheduling-indexer-3.md",
+        "memory/scheduling-indexer.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "B-plus-multi-query",
+      "task_id": "session-29-media-worker-5",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/media-worker-5.md"
+      ],
+      "retrieved_docs": [
+        "memory/scheduling-indexer-3.md",
+        "memory/scheduling-indexer-5.md",
+        "memory/scheduling-indexer.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "B-plus-multi-query",
+      "task_id": "session-45-auth-scheduler-3",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/auth-scheduler-3.md"
+      ],
+      "retrieved_docs": [
+        "memory/scheduling-indexer-2.md",
+        "memory/scheduling-indexer-3.md",
+        "memory/scheduling-indexer.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "B-plus-multi-query",
+      "task_id": "session-54-loyalty-worker-5",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/loyalty-worker-5.md"
+      ],
+      "retrieved_docs": [
+        "memory/scheduling-indexer-2.md",
+        "memory/scheduling-indexer-3.md",
+        "memory/scheduling-indexer.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "B-plus-multi-query",
+      "task_id": "session-57-analytics-service",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/analytics-service.md"
+      ],
+      "retrieved_docs": [
+        "memory/scheduling-indexer-2.md",
+        "memory/scheduling-indexer-3.md",
+        "memory/scheduling-indexer.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "C-built-in-agent-memory",
+      "task_id": "session-02-moderation-gateway-5",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/moderation-gateway-5.md"
+      ],
+      "retrieved_docs": [
+        "distractors/naming-guide.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "C-built-in-agent-memory",
+      "task_id": "session-04-billing-worker",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/billing-worker.md"
+      ],
+      "retrieved_docs": [
+        "memory/pricing-worker.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "C-built-in-agent-memory",
+      "task_id": "session-05-ledger-scheduler-3",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/ledger-scheduler-3.md"
+      ],
+      "retrieved_docs": [
+        "memory/wallet-scheduler-3.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "C-built-in-agent-memory",
+      "task_id": "session-06-loyalty-indexer-4",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/loyalty-indexer-4.md"
+      ],
+      "retrieved_docs": [
+        "distractors/naming-guide.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "C-built-in-agent-memory",
+      "task_id": "session-08-geocoding-processor-4",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/geocoding-processor-4.md"
+      ],
+      "retrieved_docs": [
+        "memory/recommendations-processor-4.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "C-built-in-agent-memory",
+      "task_id": "session-13-import-api-2",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/import-api-2.md"
+      ],
+      "retrieved_docs": [
+        "distractors/naming-guide.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "C-built-in-agent-memory",
+      "task_id": "session-14-ledger-gateway-4",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/ledger-gateway-4.md"
+      ],
+      "retrieved_docs": [
+        "memory/wallet-gateway-4.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "C-built-in-agent-memory",
+      "task_id": "session-24-analytics-processor-4",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/analytics-processor-4.md"
+      ],
+      "retrieved_docs": [
+        "memory/translation-processor-4.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "C-built-in-agent-memory",
+      "task_id": "session-27-ingestion-scheduler",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/ingestion-scheduler.md"
+      ],
+      "retrieved_docs": [
+        "memory/scheduling-indexer.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "C-built-in-agent-memory",
+      "task_id": "session-28-payments-service",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/payments-service.md"
+      ],
+      "retrieved_docs": [
+        "memory/tax-processor-6.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "C-built-in-agent-memory",
+      "task_id": "session-32-ledger-indexer-5",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/ledger-indexer-5.md"
+      ],
+      "retrieved_docs": [
+        "memory/wallet-indexer-5.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "C-built-in-agent-memory",
+      "task_id": "session-33-ingestion-processor-2",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/ingestion-processor-2.md"
+      ],
+      "retrieved_docs": [
+        "memory/recommendations-processor-2.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "C-built-in-agent-memory",
+      "task_id": "session-40-catalog-processor",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/catalog-processor.md"
+      ],
+      "retrieved_docs": [
+        "memory/scheduling-processor.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "C-built-in-agent-memory",
+      "task_id": "session-43-fraud-indexer-3",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/fraud-indexer-3.md"
+      ],
+      "retrieved_docs": [
+        "memory/recommendations-indexer-3.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "C-built-in-agent-memory",
+      "task_id": "session-44-analytics-api-3",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/analytics-api-3.md"
+      ],
+      "retrieved_docs": [
+        "distractors/naming-guide.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "C-built-in-agent-memory",
+      "task_id": "session-47-geocoding-gateway-6",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/geocoding-gateway-6.md"
+      ],
+      "retrieved_docs": [
+        "memory/webhooks-gateway-6.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "C-built-in-agent-memory",
+      "task_id": "session-48-billing-processor-4",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/billing-processor-4.md"
+      ],
+      "retrieved_docs": [
+        "memory/translation-processor-4.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "C-built-in-agent-memory",
+      "task_id": "session-49-payments-processor-5",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/payments-processor-5.md"
+      ],
+      "retrieved_docs": [
+        "memory/wallet-processor-5.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "C-built-in-agent-memory",
+      "task_id": "session-50-archive-indexer-3",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/archive-indexer-3.md"
+      ],
+      "retrieved_docs": [
+        "memory/scheduling-indexer-3.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "C-built-in-agent-memory",
+      "task_id": "session-54-loyalty-worker-5",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/loyalty-worker-5.md"
+      ],
+      "retrieved_docs": [
+        "memory/scheduling-worker-5.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "C-built-in-agent-memory",
+      "task_id": "session-56-gateway-api-4",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/gateway-api-4.md"
+      ],
+      "retrieved_docs": [
+        "distractors/naming-guide.md"
+      ],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-00-export-worker-4",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/export-worker-4.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-01-catalog-service",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/catalog-service.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-02-moderation-gateway-5",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/moderation-gateway-5.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-03-pricing-indexer-4",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/pricing-indexer-4.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-04-billing-worker",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/billing-worker.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-05-ledger-scheduler-3",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/ledger-scheduler-3.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-06-loyalty-indexer-4",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/loyalty-indexer-4.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-07-scheduling-service-5",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/scheduling-service-5.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-08-geocoding-processor-4",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/geocoding-processor-4.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-09-identity-indexer",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/identity-indexer.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-10-payments-processor-6",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/payments-processor-6.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-11-translation-indexer-4",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/translation-indexer-4.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-12-auth-service-4",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/auth-service-4.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-13-import-api-2",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/import-api-2.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-14-ledger-gateway-4",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/ledger-gateway-4.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-15-webhooks-gateway-2",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/webhooks-gateway-2.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-16-reviews-indexer-2",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/reviews-indexer-2.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-17-wallet-api",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/wallet-api.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-18-pricing-service-6",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/pricing-service-6.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-19-messaging-api-3",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/messaging-api-3.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-20-audit-scheduler",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/audit-scheduler.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-21-reviews-scheduler",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/reviews-scheduler.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-22-refunds-scheduler-4",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/refunds-scheduler-4.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-23-tax-gateway-5",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/tax-gateway-5.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-24-analytics-processor-4",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/analytics-processor-4.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-25-tax-api",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/tax-api.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-26-scheduling-gateway-2",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/scheduling-gateway-2.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-27-ingestion-scheduler",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/ingestion-scheduler.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-28-payments-service",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/payments-service.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-29-media-worker-5",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/media-worker-5.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-30-scheduling-api",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/scheduling-api.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-31-translation-indexer",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/translation-indexer.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-32-ledger-indexer-5",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/ledger-indexer-5.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-33-ingestion-processor-2",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/ingestion-processor-2.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-34-ledger-indexer-3",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/ledger-indexer-3.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-35-reporting-indexer-4",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/reporting-indexer-4.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-36-messaging-scheduler-3",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/messaging-scheduler-3.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-37-recommendations-processor-3",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/recommendations-processor-3.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-38-search-api-5",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/search-api-5.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-39-shipping-service-3",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/shipping-service-3.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-40-catalog-processor",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/catalog-processor.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-41-tax-gateway-4",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/tax-gateway-4.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-42-gateway-processor-3",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/gateway-processor-3.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-43-fraud-indexer-3",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/fraud-indexer-3.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-44-analytics-api-3",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/analytics-api-3.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-45-auth-scheduler-3",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/auth-scheduler-3.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-46-routing-gateway",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/routing-gateway.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-47-geocoding-gateway-6",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/geocoding-gateway-6.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-48-billing-processor-4",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/billing-processor-4.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-49-payments-processor-5",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/payments-processor-5.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-50-archive-indexer-3",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/archive-indexer-3.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-51-search-service-5",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/search-service-5.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-52-tax-processor-2",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/tax-processor-2.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-53-shipping-api-6",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/shipping-api-6.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-54-loyalty-worker-5",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/loyalty-worker-5.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-55-export-scheduler-6",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/export-scheduler-6.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-56-gateway-api-4",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/gateway-api-4.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-57-analytics-service",
+      "difficulty": "easy",
+      "relevant_docs": [
+        "memory/analytics-service.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-58-reviews-gateway-5",
+      "difficulty": "medium",
+      "relevant_docs": [
+        "memory/reviews-gateway-5.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    },
+    {
+      "arm": "D-no-memory",
+      "task_id": "session-59-gateway-processor-5",
+      "difficulty": "hard",
+      "relevant_docs": [
+        "memory/gateway-processor-5.md"
+      ],
+      "retrieved_docs": [],
+      "recall": 0.0,
+      "runs": 1
+    }
+  ],
+  "marginal_verdicts": {
+    "B-plus-debate": {
+      "tokens_per_success_delta_vs_b": 32.716667,
+      "success_rate_delta_vs_b": 0.0,
+      "precision_delta_vs_b": 0.0,
+      "recall_delta_vs_b": 0.0,
+      "verdict": "skip by default; no measured quality gain over B-default in this sample"
+    },
+    "B-plus-hyde": {
+      "tokens_per_success_delta_vs_b": 262.665306,
+      "success_rate_delta_vs_b": -0.183333,
+      "precision_delta_vs_b": -0.061111,
+      "recall_delta_vs_b": -0.183333,
+      "verdict": "skip by default; no measured quality gain over B-default in this sample"
+    },
+    "B-plus-multi-query": {
+      "tokens_per_success_delta_vs_b": 146.745455,
+      "success_rate_delta_vs_b": -0.083333,
+      "precision_delta_vs_b": -0.027778,
+      "recall_delta_vs_b": -0.083333,
+      "verdict": "skip by default; no measured quality gain over B-default in this sample"
+    },
+    "B-reflection-consolidated": {
+      "tokens_per_success_delta_vs_b": 2711.966667,
+      "success_rate_delta_vs_b": 0.0,
+      "precision_delta_vs_b": 0.0,
+      "recall_delta_vs_b": 0.0,
+      "verdict": "skip by default; no measured quality gain over B-default in this sample"
+    }
+  }
+}

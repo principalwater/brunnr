@@ -12,10 +12,11 @@ top. MCP-first, with pluggable agents and pluggable memory backends.
 
 [![System map](docs/diagrams/system-map.png)](docs/diagrams/system-map.mmd)
 
-On our [retrieval benchmark](benchmarks/README.md), targeted recall cuts per-query context tokens by
-**53% → 93%** as memory grows (13 → 180 documents) versus replaying the whole context: full replay
-scales with the corpus while Brunnr sends a bounded index slice plus a top-k slice (~900 tokens).
-See the [tables and methodology](benchmarks/README.md).
+On our [retrieval benchmark](benchmarks/README.md), Brunnr holds per-query context cost at
+**~1,000 tokens** while the memory grows into the hundreds of thousands of tokens — a realistic
+multi-session history is already 100k+ tokens of accumulated reasoning, tool output, and messages.
+Full-context replay grows with the history, so the saving rises from **93% to 99.8%** as memory
+scales (13k → 478k tokens). See the [chart, tables, and methodology](benchmarks/README.md).
 
 **What you get**
 

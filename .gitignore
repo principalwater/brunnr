@@ -17,3 +17,8 @@
 *.env.*
 !.env.example
 /benchmarks/results/*/raw.jsonl
+
+# procedural benchmark corpora (regenerated deterministically by tools/generate_corpus.py)
+/benchmarks/xl-corpus/
+/benchmarks/session-corpus/
+/benchmarks/mid-corpus/
