@@ -10,13 +10,16 @@
 - `get_node`: drill down by deterministic `node_id` or memory id.
 
 `VectorStore` is lower level. It owns only collection/index creation, upsert, search, get, and
-capability reporting. Embedding, **chunk-on-store**, L0-L3 memory tiering, payload schema, and RRF
-all live in `VectorMemoryBackend<V: VectorStore>` — so every vector engine inherits them for free.
+capability reporting. Embedding, **chunk-on-store**, **small-to-big retrieval**, L0-L3 memory
+tiering, payload schema, and RRF all live in `VectorMemoryBackend<V: VectorStore>` — so every
+vector engine inherits them for free.
 
-Because chunking is done once in `VectorMemoryBackend`, **any** vector backend automatically gets
-bounded chunk-level retrieval: `store` splits content into ~400-token chunks with parent linkage,
-and `find` returns top-k chunks rather than whole records (full document reachable by `node_id`
-drill-down). See [memory.md §3.5](memory.md) for the chunking algorithm.
+Because chunking and small-to-big are done once in `VectorMemoryBackend`, **any** vector backend
+automatically gets bounded, coherent retrieval: `store` splits content into ~400-token chunks with
+parent linkage, and `find` matches on the precise chunk but returns the surrounding **parent-section
+window** (same-parent hits collapsed into one), bounded by an adaptive budget — with the full
+document reachable by `node_id` drill-down. See [memory.md §3.5](memory.md) for the chunking +
+small-to-big algorithm and the adaptive budget.
 
 ## Hybrid And RRF
 

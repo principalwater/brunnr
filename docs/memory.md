@@ -134,7 +134,9 @@ sequenceDiagram
   VM->>Em: embed_query("query: …")
   VM->>VS: vector ANN search (cosine)
   VM->>VM: reciprocal_rank_fusion([kw, vec], k=60)
-  VM-->>Ag: top-k SearchHit (record, score, source=hybrid)
+  VM->>VS: fetch sibling chunks (parent_node) of matched chunks
+  VM->>VM: small-to-big expand + dedup (adaptive budget)
+  VM-->>Ag: k SearchHit (parent-section window, score, source=hybrid)
   Ag->>VM: store(memory)
   VM->>VM: chunk_text(content) — recursive, bounded chunks
   loop per chunk
@@ -148,24 +150,37 @@ sequenceDiagram
 upsert (`vector_memory.rs`), so re-running a backfill never duplicates. This gives the
 idempotency the literature calls for in heterogeneous memory writes.
 
-### 3.5 Chunking — bounded, coherent recall [implemented, default]
+### 3.5 Chunking + small-to-big — bounded, coherent recall [implemented, default]
 
-Records are split into bounded chunks **on store**, so retrieval returns a small relevant slice
-(top-k chunks) instead of whole documents. This is the standard RAG granularity: a memory that
-returns a whole 100 KB record per query defeats the point. `chunking::chunk_text` is deterministic
-and zero-LLM — it splits recursively on the most semantic boundary available (markdown heading →
-blank line → line break → sentence → a hard character window only as a last resort), packing pieces
-up to ~400 tokens with a small overlap so context carries across boundaries.
+**On store**, records are split into bounded chunks (`chunking::chunk_text`, deterministic and
+zero-LLM): it splits recursively on the most semantic boundary available (markdown heading → blank
+line → line break → sentence → a hard character window only as a last resort), packing pieces up to
+~400 tokens with a small overlap so context carries across boundaries. Each chunk is its own
+retrievable record with **parent linkage** — `parent_node`, node id `<parent>#chunk-N`, and
+`chunk_index`/`chunk_count`. Small content yields a single chunk and keeps the original id, so
+dedup/idempotency is unchanged.
 
-- Each chunk is its own retrievable record with **parent linkage** — `parent_node` plus a node id
-  `<parent>#chunk-N` and `chunk_index`/`chunk_count` — so the full document is always reachable by
-  drilling down on the parent `node_id`.
-- Small content yields a single chunk and keeps the original id, so dedup/idempotency is unchanged.
-- Recall is therefore bounded by **chunk size × top-k**, not by record size — there is no content
-  truncation on the read path; the relevant passage is retrieved, not an arbitrary prefix.
+**On read (small-to-big)**, matching happens on the precise small chunk, but `find` returns the
+surrounding **parent-section context**: contiguous sibling chunks of the same `parent_node`, merged
+with the chunker overlap removed, grown symmetrically around the match. Several matched chunks of
+one parent collapse into **one** expanded hit whose `node_id` is the parent — so a result set is
+*k distinct sources*, not *k fragments* — and the complete document stays one `get_node(parent)`
+drill-down away (reconstructed from its siblings). This is the small-to-big / parent-document
+pattern: match precisely, return coherent context.
 
-This is why the [benchmark](../benchmarks/README.md) holds per-query cost at ~1k tokens even as the
-durable memory grows past a million tokens.
+The expansion is **bounded by an adaptive budget** (`parent_context_*`). By default
+(`parent_context_auto`) the budget is the **median size of multi-chunk parent documents** observed
+on the collection, clamped to `[chunk size, parent_context_max_chars]` (8192 ≈ ~2k tokens) and
+falling back to a fixed `parent_context_chars` (3200) until the corpus is seen. So the window
+self-calibrates: a corpus of cohesive multi-KB notes returns whole sections, while a corpus with
+huge outliers caps per-source context and leaves the rest to drill-down. Single-chunk records have
+no siblings, so expansion is a **no-op** for them — small-document recall is unchanged.
+
+Recall is therefore bounded by **budget × distinct sources**, not by record size, and there is no
+content truncation on the read path: the relevant passage is returned inside coherent surrounding
+context, never an arbitrary prefix. This is why the [benchmark](../benchmarks/README.md) keeps
+per-query cost bounded — small-to-big windows, not whole documents — even as the durable memory
+grows past a million tokens.
 
 ### 3.6 Retrieval enhancements
 
@@ -335,11 +350,12 @@ Implemented surfaces:
 
 Let a project's full re-read context cost $T_\text{full}$ tokens. Replaying it every session of a
 multi-session task of $N$ sessions costs $\approx N \cdot T_\text{full}$. Retrieval instead
-injects only the top-$k$ slices, $\approx k \cdot \bar{c}$ tokens ($\bar{c}$ = mean chunk size),
+injects only the matched sources expanded to their parent sections, $\approx k \cdot b$ tokens
+($k$ = distinct sources, $b$ = the small-to-big budget, capped at `parent_context_max_chars`),
 plus the anchor $T_a \ll T_\text{full}$:
 
 ```math
-\text{savings per session} \approx T_\text{full} - (k\,\bar{c} + T_a)
+\text{savings per session} \approx T_\text{full} - (k\,b + T_a)
 ```
 
 Tiering compounds this: high-tier (`L3Project`) records are dense summaries, and `get_node`
