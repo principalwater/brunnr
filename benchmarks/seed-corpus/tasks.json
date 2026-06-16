@@ -101,6 +101,24 @@
       "answer": "max=25 connections per instance",
       "relevant_docs": ["memory/db-pool-size-v2.md"],
       "distractor_docs": ["distractors/db-pool-size-v1.md", "memory/pg-pool-config.md"]
+    },
+    {
+      "id": "current-deploy-strategy",
+      "difficulty": "medium",
+      "ability": "temporal-ordering",
+      "question": "What deployment strategy does the platform currently use?",
+      "answer": "canary releases with 5% traffic split",
+      "relevant_docs": ["memory/deploy-strategy-v2.md"],
+      "distractor_docs": ["distractors/deploy-strategy-v1.md", "distractors/reliability-principles.md"]
+    },
+    {
+      "id": "payment-requirements",
+      "difficulty": "hard",
+      "ability": "multi-session-synthesis",
+      "question": "What are the payment service API timeout and idempotency key retention requirements?",
+      "answer": "30-second timeout; idempotency keys retained 24 hours",
+      "relevant_docs": ["memory/payment-timeout.md", "memory/payment-idempotency.md"],
+      "distractor_docs": ["distractors/payment-general.md"]
     }
   ]
 }

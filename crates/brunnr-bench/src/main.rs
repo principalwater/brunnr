@@ -37,6 +37,11 @@ struct Args {
     results: PathBuf,
     #[arg(long, default_value_t = DEFAULT_REPS)]
     reps: usize,
+    /// Include signal-arm backends (entity-overlap, temporal-decay, supersession,
+    /// episode-context). Off by default so scaling tiers (xl/session/mid/mega) skip the
+    /// extra backfill cost. Enable for quality/ability tiers.
+    #[arg(long, default_value_t = false)]
+    signal_arms: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -89,6 +94,25 @@ enum ArmKind {
 }
 
 impl ArmKind {
+    /// Core arms: run on every tier including large scaling tiers.
+    fn core() -> &'static [Self] {
+        &[
+            Self::FullReplay,
+            Self::FullReplayCold,
+            Self::BuiltInAgentMemory,
+            Self::MdOkfIndexFirst,
+            Self::DefaultBrunnr,
+            Self::DefaultBrunnrCold,
+            Self::Hyde,
+            Self::MultiQuery,
+            Self::Reflection,
+            Self::Debate,
+            Self::NoMemory,
+        ]
+    }
+
+    /// All arms including signal arms. Signal arms only run with `--signal-arms` and only
+    /// produce meaningful deltas on ability-tagged tasks.
     fn all() -> &'static [Self] {
         &[
             Self::FullReplay,
@@ -160,14 +184,13 @@ impl ArmKind {
 struct BenchState {
     raw_backend: Box<dyn MemoryBackend>,
     reflection_backend: Box<dyn MemoryBackend>,
-    // D1: entity-overlap channel (entity_linking=true)
-    entity_backend: Box<dyn MemoryBackend>,
-    // D2: temporal decay (temporal_decay_lambda=0.01)
-    temporal_backend: Box<dyn MemoryBackend>,
-    // D2: knowledge-update supersession (entity_linking=true, supersession=true)
-    supersession_backend: Box<dyn MemoryBackend>,
-    // D3: episodic context expansion (entity_linking=true, episode_context_window=2)
-    episode_backend: Box<dyn MemoryBackend>,
+    // Signal backends — None when --signal-arms is not set (saves backfill cost on
+    // scaling tiers). Ability-gated at retrieve time: each arm falls through to
+    // raw_backend for tasks that don't carry the matching ability tag.
+    entity_backend: Option<Box<dyn MemoryBackend>>,
+    temporal_backend: Option<Box<dyn MemoryBackend>>,
+    supersession_backend: Option<Box<dyn MemoryBackend>>,
+    episode_backend: Option<Box<dyn MemoryBackend>>,
     raw_docs: Vec<CorpusDoc>,
     reflection_docs: Vec<CorpusDoc>,
     raw_index: String,
@@ -306,6 +329,19 @@ struct AggregateOutput {
     aggregate: BTreeMap<String, AggregateArm>,
     retrieval_misses: Vec<RetrievalMiss>,
     marginal_verdicts: BTreeMap<String, MarginalVerdict>,
+    /// Per-signal focused verdict: recall/precision delta on ability-targeted tasks only.
+    /// Omitted from JSON when empty (i.e., --signal-arms was not passed).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    focused_signal_verdicts: BTreeMap<String, FocusedSignalVerdict>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct FocusedSignalVerdict {
+    ability: String,
+    targeted_task_count: usize,
+    recall_delta: f64,
+    precision_delta: f64,
+    default_decision: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -349,7 +385,13 @@ async fn main() -> Result<()> {
             SUITE_VERSION
         );
     }
-    let state = prepare_state(&repo_root, &seed_root, &suite).await?;
+    let state = prepare_state(&repo_root, &seed_root, &suite, args.signal_arms).await?;
+
+    let arms: &[ArmKind] = if args.signal_arms {
+        ArmKind::all()
+    } else {
+        ArmKind::core()
+    };
 
     let raw_path = results_root.join("raw.jsonl");
     let timing_path = results_root.join("timing.jsonl");
@@ -357,7 +399,7 @@ async fn main() -> Result<()> {
     let mut raw = String::new();
     let mut timing = String::new();
     for rep in 0..args.reps {
-        for arm in ArmKind::all() {
+        for arm in arms {
             for task in &suite.tasks {
                 let output = run_row(*arm, rep, task, &state).await?;
                 raw.push_str(&serde_json::to_string(&output.row)?);
@@ -426,6 +468,7 @@ async fn prepare_state(
     repo_root: &Path,
     seed_root: &Path,
     suite: &TaskSuite,
+    signal_arms: bool,
 ) -> Result<BenchState> {
     let raw_docs = load_corpus(seed_root)?;
     let raw_index = render_index("Benchmark Corpus Index", &raw_docs);
@@ -456,41 +499,51 @@ async fn prepare_state(
     )?;
     backfill_both(&raw_backend, &raw_import).await?;
 
-    // D1: entity-overlap backend.
-    let entity_backend = make_backend(
-        "bench_entity",
-        VectorMemoryConfig::new("bench_entity").with_entity_linking(true),
-        embedder.clone(),
-    )?;
-    backfill_both(&entity_backend, &raw_import).await?;
+    // Signal backends — only built when --signal-arms is set to avoid the backfill
+    // overhead on large scaling tiers.
+    let (entity_backend, temporal_backend, supersession_backend, episode_backend) = if signal_arms
+    {
+        let eb = make_backend(
+            "bench_entity",
+            VectorMemoryConfig::new("bench_entity").with_entity_linking(true),
+            embedder.clone(),
+        )?;
+        backfill_both(&eb, &raw_import).await?;
 
-    // D2: temporal decay backend (lambda=0.01: ~1% score decay per day).
-    let temporal_backend = make_backend(
-        "bench_temporal",
-        VectorMemoryConfig::new("bench_temporal").with_temporal_decay(0.01),
-        embedder.clone(),
-    )?;
-    backfill_both(&temporal_backend, &raw_import).await?;
+        let tb = make_backend(
+            "bench_temporal",
+            VectorMemoryConfig::new("bench_temporal").with_temporal_decay(0.01),
+            embedder.clone(),
+        )?;
+        backfill_both(&tb, &raw_import).await?;
 
-    // D2: knowledge-update supersession backend (entity + supersession).
-    let supersession_backend = make_backend(
-        "bench_supersession",
-        VectorMemoryConfig::new("bench_supersession")
-            .with_entity_linking(true)
-            .with_knowledge_update_supersession(true),
-        embedder.clone(),
-    )?;
-    backfill_both(&supersession_backend, &raw_import).await?;
+        let sb = make_backend(
+            "bench_supersession",
+            VectorMemoryConfig::new("bench_supersession")
+                .with_entity_linking(true)
+                .with_knowledge_update_supersession(true),
+            embedder.clone(),
+        )?;
+        backfill_both(&sb, &raw_import).await?;
 
-    // D3: episode context expansion backend (entity + episode window=2).
-    let episode_backend = make_backend(
-        "bench_episode",
-        VectorMemoryConfig::new("bench_episode")
-            .with_entity_linking(true)
-            .with_episode_context_window(2),
-        embedder.clone(),
-    )?;
-    backfill_both(&episode_backend, &raw_import).await?;
+        let epb = make_backend(
+            "bench_episode",
+            VectorMemoryConfig::new("bench_episode")
+                .with_entity_linking(true)
+                .with_episode_context_window(2),
+            embedder.clone(),
+        )?;
+        backfill_both(&epb, &raw_import).await?;
+
+        (
+            Some(Box::new(eb) as Box<dyn MemoryBackend>),
+            Some(Box::new(tb) as Box<dyn MemoryBackend>),
+            Some(Box::new(sb) as Box<dyn MemoryBackend>),
+            Some(Box::new(epb) as Box<dyn MemoryBackend>),
+        )
+    } else {
+        (None, None, None, None)
+    };
 
     // Reflection backend (existing arm).
     let reflection_import = work_root.join("reflection-import");
@@ -510,10 +563,10 @@ async fn prepare_state(
     Ok(BenchState {
         raw_backend: Box::new(raw_backend),
         reflection_backend: Box::new(reflection_backend),
-        entity_backend: Box::new(entity_backend),
-        temporal_backend: Box::new(temporal_backend),
-        supersession_backend: Box::new(supersession_backend),
-        episode_backend: Box::new(episode_backend),
+        entity_backend,
+        temporal_backend,
+        supersession_backend,
+        episode_backend,
         raw_docs,
         reflection_docs,
         raw_index,
@@ -589,6 +642,11 @@ async fn run_row(
 async fn retrieve(arm: ArmKind, task: &TaskSpec, state: &BenchState) -> Result<RetrievalOutput> {
     match arm {
         ArmKind::FullReplay | ArmKind::FullReplayCold => {
+            // Use the full body (not preview) so the token count reflects the actual
+            // cost of including every document in context. For small docs (< 500 chars)
+            // this is identical to preview; for large docs it shows the true scaling cost,
+            // proving that full-replay token usage grows with doc size while Brunnr
+            // retrieval stays bounded at top_k × chunk_size.
             let hits = state
                 .raw_docs
                 .iter()
@@ -596,7 +654,7 @@ async fn retrieve(arm: ArmKind, task: &TaskSpec, state: &BenchState) -> Result<R
                     doc_id: doc.id.clone(),
                     score: 1.0,
                     source: "full-replay".to_string(),
-                    content_preview: preview(&doc.body),
+                    content_preview: doc.body.clone(),
                 })
                 .collect();
             Ok(RetrievalOutput {
@@ -698,8 +756,19 @@ async fn retrieve(arm: ArmKind, task: &TaskSpec, state: &BenchState) -> Result<R
             .await
         }
         ArmKind::EntityOverlap => {
+            // Only use signal backend on entity-disambiguation tasks; fall through to
+            // baseline for all others so non-targeted tasks don't dilute the verdict.
+            let backend: &dyn MemoryBackend =
+                if task.ability.as_deref() == Some("entity-disambiguation") {
+                    state
+                        .entity_backend
+                        .as_deref()
+                        .unwrap_or(state.raw_backend.as_ref())
+                } else {
+                    state.raw_backend.as_ref()
+                };
             retrieve_find(
-                state.entity_backend.as_ref(),
+                backend,
                 &state.raw_docs,
                 &task.question,
                 DEFAULT_TOP_M,
@@ -710,8 +779,17 @@ async fn retrieve(arm: ArmKind, task: &TaskSpec, state: &BenchState) -> Result<R
             .await
         }
         ArmKind::TemporalDecay => {
+            let backend: &dyn MemoryBackend =
+                if task.ability.as_deref() == Some("temporal-ordering") {
+                    state
+                        .temporal_backend
+                        .as_deref()
+                        .unwrap_or(state.raw_backend.as_ref())
+                } else {
+                    state.raw_backend.as_ref()
+                };
             retrieve_find(
-                state.temporal_backend.as_ref(),
+                backend,
                 &state.raw_docs,
                 &task.question,
                 DEFAULT_TOP_M,
@@ -722,8 +800,17 @@ async fn retrieve(arm: ArmKind, task: &TaskSpec, state: &BenchState) -> Result<R
             .await
         }
         ArmKind::Supersession => {
+            let backend: &dyn MemoryBackend =
+                if task.ability.as_deref() == Some("knowledge-update") {
+                    state
+                        .supersession_backend
+                        .as_deref()
+                        .unwrap_or(state.raw_backend.as_ref())
+                } else {
+                    state.raw_backend.as_ref()
+                };
             retrieve_find(
-                state.supersession_backend.as_ref(),
+                backend,
                 &state.raw_docs,
                 &task.question,
                 DEFAULT_TOP_M,
@@ -734,8 +821,17 @@ async fn retrieve(arm: ArmKind, task: &TaskSpec, state: &BenchState) -> Result<R
             .await
         }
         ArmKind::EpisodeContext => {
+            let backend: &dyn MemoryBackend =
+                if task.ability.as_deref() == Some("multi-session-synthesis") {
+                    state
+                        .episode_backend
+                        .as_deref()
+                        .unwrap_or(state.raw_backend.as_ref())
+                } else {
+                    state.raw_backend.as_ref()
+                };
             retrieve_find(
-                state.episode_backend.as_ref(),
+                backend,
                 &state.raw_docs,
                 &task.question,
                 DEFAULT_TOP_M,
@@ -836,10 +932,34 @@ fn trace_hits(hits: Vec<SearchHit>, docs: &[CorpusDoc]) -> Vec<TraceHit> {
 }
 
 fn doc_id_for_hit(hit: &SearchHit, docs: &[CorpusDoc]) -> Option<String> {
+    // 1. source_path metadata set by backfill — survives into chunk records at all
+    //    nesting levels. Match when the absolute path ends with the doc's relative id.
+    if let Some(raw_path) = hit.record.metadata.get("source_path") {
+        let normalized = raw_path.replace('\\', "/");
+        if let Some(doc) = docs
+            .iter()
+            .find(|doc| normalized.ends_with(&format!("/{}", doc.id)))
+        {
+            return Some(doc.id.clone());
+        }
+    }
+    // 2. Full body equality — exact match for small single-chunk docs (unchanged behavior).
     let hit_body = normalize_body(&hit.record.content);
-    docs.iter()
+    if let Some(doc) = docs
+        .iter()
         .find(|doc| normalize_body(&doc.body) == hit_body)
-        .map(|doc| doc.id.clone())
+    {
+        return Some(doc.id.clone());
+    }
+    // 3. Content containment — chunk text is a proper substring of the parent doc body.
+    //    Handles large docs that were split into multiple chunks.
+    if !hit_body.is_empty() {
+        return docs
+            .iter()
+            .find(|doc| normalize_body(&doc.body).contains(&hit_body))
+            .map(|doc| doc.id.clone());
+    }
+    None
 }
 
 fn score_retrieval(task: &TaskSpec, hits: &[TraceHit]) -> RetrievalReport {
@@ -935,11 +1055,20 @@ fn build_prompt(task: &TaskSpec, arm: ArmKind, retrieval: &RetrievalOutput) -> S
 }
 
 fn aggregate_rows(rows: &[RawRow]) -> AggregateOutput {
+    // Build arm list from rows in ArmKind::all() order, including only arms that ran.
+    // This is data-driven: works whether signal arms were included or not.
+    let seen: BTreeSet<&str> = rows.iter().map(|r| r.arm.as_str()).collect();
+    let ordered_ids: Vec<String> = ArmKind::all()
+        .iter()
+        .map(|a| a.id().to_string())
+        .filter(|id| seen.contains(id.as_str()))
+        .collect();
+
     let mut aggregate = BTreeMap::new();
-    for arm in ArmKind::all() {
+    for arm_id in &ordered_ids {
         let arm_rows = rows
             .iter()
-            .filter(|row| row.arm == arm.id())
+            .filter(|row| &row.arm == arm_id)
             .cloned()
             .collect::<Vec<_>>();
         if arm_rows.is_empty() {
@@ -959,7 +1088,7 @@ fn aggregate_rows(rows: &[RawRow]) -> AggregateOutput {
             by_difficulty.insert(difficulty, aggregate_group(&group_rows));
         }
         aggregate.insert(
-            arm.id().to_string(),
+            arm_id.clone(),
             AggregateArm {
                 group: aggregate_group(&arm_rows),
                 by_difficulty,
@@ -984,6 +1113,7 @@ fn aggregate_rows(rows: &[RawRow]) -> AggregateOutput {
     }
     let retrieval_misses = miss_counts.into_values().collect::<Vec<_>>();
     let marginal_verdicts = marginal_verdicts(&aggregate);
+    let focused_signal_verdicts = focused_signal_verdicts(rows, &aggregate);
     AggregateOutput {
         suite_version: SUITE_VERSION.to_string(),
         tokenizer: format!("{TOKENIZER_ID} ({TOKENIZER_PACKAGE})"),
@@ -992,6 +1122,7 @@ fn aggregate_rows(rows: &[RawRow]) -> AggregateOutput {
         aggregate,
         retrieval_misses,
         marginal_verdicts,
+        focused_signal_verdicts,
     }
 }
 
@@ -1102,6 +1233,94 @@ fn render_csv(aggregate: &AggregateOutput) -> String {
     lines.join("\n") + "\n"
 }
 
+/// Focused verdict for each signal arm: compare recall/precision on ability-targeted
+/// tasks only (not diluted by the non-targeted baseline fall-through rows).
+fn focused_signal_verdicts(
+    rows: &[RawRow],
+    aggregate: &BTreeMap<String, AggregateArm>,
+) -> BTreeMap<String, FocusedSignalVerdict> {
+    let signal_abilities: &[(&str, &str, &str)] = &[
+        ("B-plus-entity-overlap", "entity-disambiguation", "B-default-brunnr"),
+        ("B-plus-temporal-decay", "temporal-ordering", "B-default-brunnr"),
+        ("B-plus-supersession", "knowledge-update", "B-default-brunnr"),
+        ("B-plus-episode-context", "multi-session-synthesis", "B-default-brunnr"),
+    ];
+    let mut out = BTreeMap::new();
+    for (arm_id, ability, baseline_id) in signal_abilities {
+        // Only report if the arm actually ran.
+        if !aggregate.contains_key(*arm_id) {
+            continue;
+        }
+        let targeted: Vec<&RawRow> = rows
+            .iter()
+            .filter(|r| r.ability.as_deref() == Some(ability) && r.arm == *arm_id)
+            .collect();
+        let baseline: Vec<&RawRow> = rows
+            .iter()
+            .filter(|r| r.ability.as_deref() == Some(ability) && r.arm == *baseline_id)
+            .collect();
+        if targeted.is_empty() || baseline.is_empty() {
+            out.insert(
+                arm_id.to_string(),
+                FocusedSignalVerdict {
+                    ability: ability.to_string(),
+                    targeted_task_count: 0,
+                    recall_delta: 0.0,
+                    precision_delta: 0.0,
+                    default_decision: "no ability-tagged tasks in this corpus; keeping OFF"
+                        .to_string(),
+                },
+            );
+            continue;
+        }
+        let recall_signal = mean(
+            &targeted
+                .iter()
+                .map(|r| r.retrieval.recall)
+                .collect::<Vec<_>>(),
+        );
+        let recall_base = mean(
+            &baseline
+                .iter()
+                .map(|r| r.retrieval.recall)
+                .collect::<Vec<_>>(),
+        );
+        let prec_signal = mean(
+            &targeted
+                .iter()
+                .map(|r| r.retrieval.precision)
+                .collect::<Vec<_>>(),
+        );
+        let prec_base = mean(
+            &baseline
+                .iter()
+                .map(|r| r.retrieval.precision)
+                .collect::<Vec<_>>(),
+        );
+        let recall_delta = round6(recall_signal - recall_base);
+        let precision_delta = round6(prec_signal - prec_base);
+        // Turn default ON only if recall improves by ≥5pp without hurting precision.
+        let default_decision = if recall_delta >= 0.05 && precision_delta >= -0.02 {
+            format!("ENABLE DEFAULT: +{recall_delta:.2} recall on {ability} tasks, precision={precision_delta:+.2}")
+        } else if recall_delta > 0.0 {
+            format!("keep OFF (marginal gain {recall_delta:+.2} recall; run on larger corpus before enabling)")
+        } else {
+            format!("keep OFF (delta recall={recall_delta:+.2} precision={precision_delta:+.2} on {ability} tasks)")
+        };
+        out.insert(
+            arm_id.to_string(),
+            FocusedSignalVerdict {
+                ability: ability.to_string(),
+                targeted_task_count: targeted.len(),
+                recall_delta,
+                precision_delta,
+                default_decision,
+            },
+        );
+    }
+    out
+}
+
 fn render_chart(aggregate: &AggregateOutput) -> String {
     let mut lines = vec!["Tokens per success (lower is better; tokenizer=cl100k_base)".to_string()];
     for (arm, row) in &aggregate.aggregate {
@@ -1126,6 +1345,19 @@ fn render_chart(aggregate: &AggregateOutput) -> String {
             verdict.recall_delta_vs_b,
             verdict.verdict
         ));
+    }
+    if !aggregate.focused_signal_verdicts.is_empty() {
+        lines.push("\nSignal arm focused evaluation (ability-tagged tasks only)".to_string());
+        for (arm, verdict) in &aggregate.focused_signal_verdicts {
+            lines.push(format!(
+                "{arm} [{ability}] n={n} delta_recall={dr:+.3} delta_precision={dp:+.3} → {dec}",
+                ability = verdict.ability,
+                n = verdict.targeted_task_count,
+                dr = verdict.recall_delta,
+                dp = verdict.precision_delta,
+                dec = verdict.default_decision,
+            ));
+        }
     }
     lines.join("\n") + "\n"
 }
