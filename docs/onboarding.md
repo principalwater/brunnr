@@ -62,8 +62,18 @@ brunnr onboard my-project ./memory-export \
 Each project gets its own collection. `user_id` is also written as payload tenancy metadata inside
 the project collection.
 
+**Many agents on one project (Hirð teams).** A team of agents shares the project collection and
+reads each other's `shared` knowledge while keeping per-teammate `agent`/`task` scratch isolated —
+no extra setup beyond the shared backend. See [teams.md](teams.md) and
+[concurrency.md](concurrency.md).
+
+**More vector engines.** `qdrant` and `sqlite-vec` are the wired-in `--backend` choices; any other
+vector store (e.g. PostgreSQL + `pgvector`) is a thin feature-gated `VectorStore` adapter that
+inherits the same chunk-on-store, hybrid RRF, and tenancy. See
+[backends.md](backends.md#adding-a-vector-backend-the-vectorstore-adapter-pattern).
+
 See [modes.md](modes.md), [memory.md](memory.md), [concurrency.md](concurrency.md),
-[upgrades.md](upgrades.md).
+[teams.md](teams.md), [backends.md](backends.md), [upgrades.md](upgrades.md).
 
 ---
 

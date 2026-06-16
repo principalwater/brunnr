@@ -30,7 +30,9 @@ scales (13k → 1M tokens). See the [chart, tables, and methodology](benchmarks/
   your machine (LLM consolidation is opt-in). Run with zero infrastructure (Files / sqlite-vec) or a
   shared server (Qdrant).
 - **Targeted recall, not replay** — ~1,000 tokens per query no matter how large the memory grows
-  (the saving above).
+  (the saving above). Records are chunked on store, so recall returns the few relevant *chunks*
+  and stays bounded even when a single document is huge — the full source is one `node_id`
+  drill-down away.
 - **Plugs into anything** — MCP-first: run memory-only and add persistent context to *any* agent or
   orchestrator (Claude Code, Codex, agent teams, your own loop) with no takeover and no lock-in.
 - **More than memory, when you want it** — optional master/worker/judge orchestration and
