@@ -349,3 +349,65 @@ fn test_embedding(text: &str) -> Vec<f32> {
     }
     vector
 }
+
+#[tokio::test]
+async fn large_content_is_chunked_so_recall_stays_bounded() {
+    let store = SqliteVecVectorStore::in_memory().expect("sqlite-vec store should open");
+    let backend = VectorMemoryBackend::with_embedder(
+        store,
+        VectorMemoryConfig {
+            collection: "chunking".to_string(),
+            dimensions: TEST_DIMENSIONS,
+            ..VectorMemoryConfig::new("chunking")
+        },
+        Arc::new(TestEmbedder),
+    )
+    .expect("backend should construct");
+
+    // A large document with a unique marker buried in the middle.
+    let marker = "plum-pudding-seven";
+    let big = format!(
+        "{}\n\nthe decisive answer is {marker}\n\n{}",
+        "alpha beta gamma. ".repeat(2_000),
+        "delta epsilon zeta. ".repeat(2_000),
+    );
+    assert!(big.chars().count() > 50_000, "test needs a genuinely large record");
+    backend
+        .store(StoreMemory {
+            content: big,
+            tags: vec!["big".to_string()],
+            metadata: Default::default(),
+            tier: MemoryTier::L1Atom,
+            node_id: Some("node:big".to_string()),
+            created_at: None,
+            scope: None,
+            agent_id: None,
+            session_id: None,
+            task_id: None,
+            user_id: None,
+        })
+        .await
+        .expect("store should succeed");
+
+    let hits = backend
+        .find(MemoryQuery::new("decisive plum-pudding-seven").with_limit(5))
+        .await
+        .expect("find should succeed");
+
+    assert!(!hits.is_empty(), "a chunk should be retrieved");
+    // Bounded: no returned chunk is anywhere near the whole-document size.
+    for hit in &hits {
+        assert!(
+            hit.record.content.chars().count() < 2_500,
+            "recall must be bounded by chunk size, got {} chars",
+            hit.record.content.chars().count()
+        );
+    }
+    // Relevant: the buried marker survives in a retrieved chunk (not lost to truncation).
+    assert!(
+        hits.iter().any(|hit| hit.record.content.contains(marker)),
+        "the relevant passage must be retrieved"
+    );
+    // Parent linkage: chunks point back to the source node for drill-down.
+    assert!(hits.iter().all(|hit| hit.record.node_id.starts_with("node:big")));
+}

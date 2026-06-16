@@ -5,6 +5,7 @@
 mod anchor;
 mod backend;
 mod backfill;
+mod chunking;
 mod compat;
 pub mod entity;
 pub mod episode;
@@ -33,6 +34,7 @@ pub use backend::MemoryBackend;
 pub use backfill::{
     backfill_directory, collect_memory_paths, parse_memory_path, BackfillFailure, BackfillStats,
 };
+pub use chunking::{chunk_text, Chunk, ChunkConfig};
 pub use compat::{CollectionCompat, COMPAT_POINT_ID, OKF_VERSION};
 pub use entity::{extract_entities, EntityIndex};
 pub use episode::EpisodeIndex;

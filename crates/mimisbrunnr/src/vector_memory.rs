@@ -8,6 +8,7 @@ use futures_util::{future::BoxFuture, FutureExt};
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    chunking::{chunk_text, ChunkConfig},
     entity::EntityIndex,
     episode::EpisodeIndex,
     identity::stable_memory_id,
@@ -386,57 +387,111 @@ impl<V: VectorStore> MemoryBackend for VectorMemoryBackend<V> {
                 .acquire(&self.config.collection, memory.session_id.as_deref())
                 .await?;
             self.ensure_ready().await?;
-            let id = stable_memory_id(&memory);
-            if let Some(existing) = self.store.get(&self.config.collection, id.as_str()).await? {
-                return point_to_record(existing);
-            }
 
-            let node_id = memory.node_id.unwrap_or_else(|| format!("node:{id}"));
-            let record = MemoryRecord {
-                id,
-                node_id,
-                content: memory.content,
-                tags: memory.tags,
-                metadata: memory.metadata,
-                tier: memory.tier,
-                created_at: memory.created_at.unwrap_or_else(Utc::now),
-                scope: memory.scope,
-                agent_id: memory.agent_id,
-                session_id: memory.session_id,
-                task_id: memory.task_id,
-                user_id: memory.user_id,
-            };
-            let vector = self.embedder.embed_passage(&record.content)?;
-            self.store
-                .upsert(
-                    &self.config.collection,
-                    vec![VectorPoint {
-                        id: record.id.to_string(),
-                        vector: vector.clone(),
-                        payload: serde_json::to_value(MemoryPayload::from(&record))?,
-                    }],
-                )
-                .await?;
+            // Chunk by default so retrieval returns bounded, coherent slices (top-k
+            // chunks) instead of whole records. Small content yields a single chunk
+            // (unchanged behavior); large content is split with parent linkage so the
+            // full record stays reachable via the parent node_id.
+            let base_id = stable_memory_id(&memory);
+            let base_node = memory
+                .node_id
+                .clone()
+                .unwrap_or_else(|| format!("node:{base_id}"));
+            let created_at = memory.created_at.unwrap_or_else(Utc::now);
+            let chunks = chunk_text(&memory.content, &ChunkConfig::default());
+            let single = chunks.len() == 1;
+            let chunk_count = chunks.len();
 
-            // Update session-local indexes.
-            if self.config.entity_linking {
-                self.entity_index
-                    .lock()
-                    .map_err(|e| MemoryError::Database(e.to_string()))?
-                    .index_record(record.clone());
-            }
-            if self.config.episode_context_window > 0 {
-                self.episode_index
-                    .lock()
-                    .map_err(|e| MemoryError::Database(e.to_string()))?
-                    .add_record(
-                        &record.node_id,
-                        &vector,
-                        self.config.episode_similarity_threshold,
-                    );
-            }
+            let mut representative: Option<MemoryRecord> = None;
+            for chunk in chunks {
+                let mut metadata = memory.metadata.clone();
+                let node_id = if single {
+                    base_node.clone()
+                } else {
+                    metadata.insert("parent_node".to_string(), base_node.clone());
+                    metadata.insert("chunk_index".to_string(), chunk.index.to_string());
+                    metadata.insert("chunk_count".to_string(), chunk_count.to_string());
+                    if let Some(heading) = &chunk.heading {
+                        metadata.insert("heading".to_string(), heading.clone());
+                    }
+                    format!("{base_node}#chunk-{}", chunk.index)
+                };
+                let chunk_memory = StoreMemory {
+                    content: chunk.content.clone(),
+                    tags: memory.tags.clone(),
+                    metadata: metadata.clone(),
+                    tier: memory.tier,
+                    node_id: Some(node_id.clone()),
+                    created_at: Some(created_at),
+                    scope: memory.scope,
+                    agent_id: memory.agent_id.clone(),
+                    session_id: memory.session_id.clone(),
+                    task_id: memory.task_id.clone(),
+                    user_id: memory.user_id.clone(),
+                };
+                // Single-chunk content keeps the original id (= stable id of the whole
+                // memory) so existing idempotency/dedup is unchanged; multi-chunk records
+                // each get their own content-addressed id.
+                let id = if single {
+                    base_id.clone()
+                } else {
+                    stable_memory_id(&chunk_memory)
+                };
+                if let Some(existing) = self.store.get(&self.config.collection, id.as_str()).await? {
+                    if representative.is_none() {
+                        representative = Some(point_to_record(existing)?);
+                    }
+                    continue;
+                }
+                let record = MemoryRecord {
+                    id,
+                    node_id,
+                    content: chunk.content,
+                    tags: memory.tags.clone(),
+                    metadata,
+                    tier: memory.tier,
+                    created_at,
+                    scope: memory.scope,
+                    agent_id: memory.agent_id.clone(),
+                    session_id: memory.session_id.clone(),
+                    task_id: memory.task_id.clone(),
+                    user_id: memory.user_id.clone(),
+                };
+                let vector = self.embedder.embed_passage(&record.content)?;
+                self.store
+                    .upsert(
+                        &self.config.collection,
+                        vec![VectorPoint {
+                            id: record.id.to_string(),
+                            vector: vector.clone(),
+                            payload: serde_json::to_value(MemoryPayload::from(&record))?,
+                        }],
+                    )
+                    .await?;
 
-            Ok(record)
+                // Update session-local indexes per chunk.
+                if self.config.entity_linking {
+                    self.entity_index
+                        .lock()
+                        .map_err(|e| MemoryError::Database(e.to_string()))?
+                        .index_record(record.clone());
+                }
+                if self.config.episode_context_window > 0 {
+                    self.episode_index
+                        .lock()
+                        .map_err(|e| MemoryError::Database(e.to_string()))?
+                        .add_record(
+                            &record.node_id,
+                            &vector,
+                            self.config.episode_similarity_threshold,
+                        );
+                }
+                if representative.is_none() {
+                    representative = Some(record);
+                }
+            }
+            representative
+                .ok_or_else(|| MemoryError::Database("chunking produced no records".to_string()))
         }
         .boxed()
     }
