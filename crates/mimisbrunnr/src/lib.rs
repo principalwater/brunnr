@@ -61,8 +61,8 @@ pub use types::{
 };
 pub use upgrade::{
     default_migration_collection, export_okf_bundle, migrate_okf_bundle, migration_manifest_path,
-    verify_okf_bundle, MigrationPlan, MigrationReport, OkfExportReport, OkfVerifyReport,
-    SnapshotReport, VectorCollectionAdmin,
+    rechunk_oversized_sqlite, verify_okf_bundle, MigrationPlan, MigrationReport, OkfExportReport,
+    OkfVerifyReport, RechunkReport, SnapshotReport, VectorCollectionAdmin,
 };
 #[cfg(feature = "vector")]
 pub use vector::{

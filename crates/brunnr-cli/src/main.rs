@@ -173,13 +173,8 @@ enum Command {
         allow_llm: bool,
     },
     Migrate {
-        okf_root: PathBuf,
-        #[arg(long, default_value = DEFAULT_CONFIG)]
-        config: PathBuf,
-        #[arg(long)]
-        new_collection: Option<String>,
-        #[arg(long, default_value_t = 30)]
-        retention_days: u32,
+        #[command(subcommand)]
+        command: MigrateCommand,
     },
     Snapshot {
         #[arg(long, default_value = DEFAULT_CONFIG)]
@@ -192,6 +187,29 @@ enum Command {
     Okf {
         #[command(subcommand)]
         command: OkfCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum MigrateCommand {
+    /// Rebuild a Qdrant collection from an OKF markdown bundle (atomic alias swap).
+    OkfBundle {
+        okf_root: PathBuf,
+        #[arg(long, default_value = DEFAULT_CONFIG)]
+        config: PathBuf,
+        #[arg(long)]
+        new_collection: Option<String>,
+        #[arg(long, default_value_t = 30)]
+        retention_days: u32,
+    },
+    /// Re-chunk oversized whole-file records in a SQLite-vec collection.
+    ///
+    /// Scans all records in the configured collection. Records whose content exceeds
+    /// the chunk size limit and that were stored before chunking was introduced (no
+    /// `parent_node` metadata) are re-stored as bounded chunks and the originals deleted.
+    Rechunk {
+        #[arg(long, default_value = DEFAULT_CONFIG)]
+        config: PathBuf,
     },
 }
 
@@ -621,12 +639,15 @@ async fn main() -> Result<()> {
             root,
             allow_llm,
         } => consolidate(config, root, allow_llm),
-        Command::Migrate {
-            okf_root,
-            config,
-            new_collection,
-            retention_days,
-        } => migrate(okf_root, config, new_collection, retention_days).await,
+        Command::Migrate { command } => match command {
+            MigrateCommand::OkfBundle {
+                okf_root,
+                config,
+                new_collection,
+                retention_days,
+            } => migrate_okf(okf_root, config, new_collection, retention_days).await,
+            MigrateCommand::Rechunk { config } => migrate_rechunk(config).await,
+        },
         Command::Snapshot {
             config,
             output_dir,
@@ -1362,7 +1383,7 @@ async fn onboard(
     Ok(())
 }
 
-async fn migrate(
+async fn migrate_okf(
     okf_root: PathBuf,
     config_path: PathBuf,
     new_collection: Option<String>,
@@ -1370,7 +1391,7 @@ async fn migrate(
 ) -> Result<()> {
     let config = load_config(&config_path)?;
     if config.memory.backend != MemoryBackendKind::Qdrant {
-        bail!("brunnr migrate currently requires backend = qdrant for atomic alias swap");
+        bail!("brunnr migrate okf-bundle currently requires backend = qdrant for atomic alias swap");
     }
     let vector_config = VectorMemoryConfig::new(&config.memory.collection);
     let compat = CollectionCompat::from_config(&vector_config);
@@ -1384,6 +1405,29 @@ async fn migrate(
     };
     let report = migrate_qdrant(&config.memory, plan).await?;
     println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
+}
+
+async fn migrate_rechunk(config_path: PathBuf) -> Result<()> {
+    let config = load_config(&config_path)?;
+    if config.memory.backend != MemoryBackendKind::SqliteVec {
+        bail!("brunnr migrate rechunk currently requires backend = sqlite-vec; for Qdrant use brunnr migrate okf-bundle");
+    }
+    use mimisbrunnr::{rechunk_oversized_sqlite, SqliteVecVectorStore, SqliteVecVectorStoreConfig};
+    use std::path::PathBuf as SPath;
+    let db_path = SPath::from(&config.memory.root)
+        .join(format!("{}.sqlite", config.memory.collection));
+    let store =
+        SqliteVecVectorStore::open(SqliteVecVectorStoreConfig::new(&db_path)).map_err(|e| {
+            anyhow::anyhow!("failed to open sqlite-vec store at {}: {e}", db_path.display())
+        })?;
+    let backend = store.clone().memory_backend(&config.memory.collection)?;
+    let report = rechunk_oversized_sqlite(&store, &backend, &config.memory.collection).await?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    println!(
+        "rechunked {}/{} oversized records in collection '{}'",
+        report.rechunked, report.oversized, config.memory.collection
+    );
     Ok(())
 }
 

@@ -10,8 +10,9 @@ use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    backfill_directory, files::parse_record, CollectionCompat, MemoryError, MemoryResult,
-    TextEmbedder, VectorMemoryBackend, VectorMemoryConfig, VectorStore,
+    backfill_directory, chunking::ChunkConfig, files::parse_record, CollectionCompat,
+    MemoryBackend, MemoryError, MemoryResult, SqliteVecVectorStore, StoreMemory, TextEmbedder,
+    VectorMemoryBackend, VectorMemoryConfig, VectorStore,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -221,4 +222,96 @@ fn is_reserved_okf_file(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
         .is_some_and(|name| matches!(name, "index.md" | "log.md"))
+}
+
+/// Report returned by [`rechunk_oversized_sqlite`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RechunkReport {
+    /// Total records scanned.
+    pub scanned: usize,
+    /// Records that were oversized (content > chunk_max_chars) and lacked `parent_node`.
+    pub oversized: usize,
+    /// Oversized records that were successfully re-stored as chunks and deleted.
+    pub rechunked: usize,
+}
+
+/// Re-chunk oversized whole-file records in a SQLite-vec collection.
+///
+/// Scans all records in `collection`. For each record whose content exceeds
+/// `ChunkConfig::default().max_chars` and that has no `parent_node` metadata
+/// (i.e. was stored before chunking was introduced), re-stores the content via
+/// `backend.store()` (which now splits into bounded chunks) then deletes the
+/// original oversized record.
+///
+/// This is the sqlite-vec migration path. For Qdrant, rebuild via `migrate_okf_bundle`.
+pub async fn rechunk_oversized_sqlite(
+    store: &SqliteVecVectorStore,
+    backend: &(impl MemoryBackend + ?Sized),
+    collection: &str,
+) -> MemoryResult<RechunkReport> {
+    let max_chars = ChunkConfig::default().max_chars;
+    let payloads = store.scan_all_records(collection)?;
+    let mut report = RechunkReport {
+        scanned: payloads.len(),
+        ..RechunkReport::default()
+    };
+
+    let mut to_delete: Vec<String> = Vec::new();
+
+    for payload in payloads {
+        let content = payload
+            .get("content")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+
+        let has_parent = payload
+            .get("metadata")
+            .and_then(|m| m.get("parent_node"))
+            .is_some();
+
+        if content.len() <= max_chars || has_parent {
+            continue;
+        }
+
+        report.oversized += 1;
+
+        let id = payload
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+
+        let tags: Vec<String> = payload
+            .get("tags")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|t| t.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let metadata: std::collections::BTreeMap<String, String> = payload
+            .get("metadata")
+            .and_then(|v| v.as_object())
+            .map(|obj| {
+                obj.iter()
+                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let mut mem = StoreMemory::atom(content);
+        mem.tags = tags;
+        mem.metadata = metadata;
+
+        backend.store(mem).await?;
+        to_delete.push(id);
+        report.rechunked += 1;
+    }
+
+    let ids: Vec<&str> = to_delete.iter().map(String::as_str).collect();
+    store.delete_records(collection, &ids)?;
+
+    Ok(report)
 }

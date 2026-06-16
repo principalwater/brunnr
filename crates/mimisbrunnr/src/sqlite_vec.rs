@@ -284,6 +284,60 @@ impl SqliteVecVectorStore {
             .lock()
             .map_err(|error| MemoryError::Database(error.to_string()))
     }
+
+    /// Return the payload JSON for every record in `collection`.
+    /// Intended for migration tooling that needs to inspect existing records.
+    pub fn scan_all_records(
+        &self,
+        collection: &str,
+    ) -> MemoryResult<Vec<serde_json::Value>> {
+        let tables = Tables::new(collection)?;
+        let connection = self.lock()?;
+        let mut stmt = connection
+            .prepare(&format!(
+                "SELECT payload FROM {records}",
+                records = tables.records,
+            ))
+            .map_err(sqlite_error)?;
+        let rows: Vec<serde_json::Value> = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(sqlite_error)?
+            .map(|r| {
+                r.map_err(sqlite_error)
+                    .and_then(|s| serde_json::from_str(&s).map_err(Into::into))
+            })
+            .collect::<MemoryResult<_>>()?;
+        Ok(rows)
+    }
+
+    /// Delete the records identified by `ids` from `collection` (all three tables).
+    pub fn delete_records(&self, collection: &str, ids: &[&str]) -> MemoryResult<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let tables = Tables::new(collection)?;
+        let mut connection = self.lock()?;
+        let tx = connection.transaction().map_err(sqlite_error)?;
+        for id in ids {
+            tx.execute(
+                &format!("DELETE FROM {records} WHERE id = ?1", records = tables.records),
+                params![id],
+            )
+            .map_err(sqlite_error)?;
+            tx.execute(
+                &format!("DELETE FROM {fts} WHERE id = ?1", fts = tables.fts),
+                params![id],
+            )
+            .map_err(sqlite_error)?;
+            tx.execute(
+                &format!("DELETE FROM {vectors} WHERE id = ?1", vectors = tables.vectors),
+                params![id],
+            )
+            .map_err(sqlite_error)?;
+        }
+        tx.commit().map_err(sqlite_error)?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone)]
