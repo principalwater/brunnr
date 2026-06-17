@@ -4,7 +4,7 @@
 
 Reads each scaling tier's summary.csv and plots, on log-log axes, the per-query
 context cost of full-context replay (which grows with the memory size) against
-Brunnr (which stays flat). Output: benchmarks/results/scaling.svg.
+Artesian (which stays flat). Output: benchmarks/results/scaling.svg.
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ RC = {
 
 FULL = "#999999"     # full replay: muted gray (the cost we beat)
 MDOKF = "#e1812c"    # md/OKF index-first: middle ground
-BRUNNR = "#4e79a7"   # Brunnr: accent
+ARTESIAN = "#4e79a7"   # Artesian: accent
 
 
 def human(v: float) -> str:
@@ -56,7 +56,7 @@ def load():
         rows = {r["arm"]: r for r in csv.DictReader(open(BENCH / "results" / tier / "summary.csv"))}
         pts.append((float(rows["A-full-replay"]["mean_total_tokens"]),
                     float(rows["E-md-okf-index-first"]["mean_total_tokens"]),
-                    float(rows["B-default-brunnr"]["mean_total_tokens"])))
+                    float(rows["B-default-artesian"]["mean_total_tokens"])))
     return sorted(pts)
 
 
@@ -66,7 +66,7 @@ def main():
     x = [f for f, _, _ in pts]
     full = [f for f, _, _ in pts]
     mdokf = [m for _, m, _ in pts]
-    brunnr = [b for _, _, b in pts]
+    artesian = [b for _, _, b in pts]
 
     fig, ax = plt.subplots(figsize=(9, 5.4))
     ax.set_xscale("log")
@@ -74,12 +74,12 @@ def main():
 
     ax.plot(x, full, color=FULL, lw=1.6, marker="o", ms=4)
     ax.plot(x, mdokf, color=MDOKF, lw=1.8, marker="o", ms=4)
-    ax.plot(x, brunnr, color=BRUNNR, lw=2.0, marker="o", ms=4)
+    ax.plot(x, artesian, color=ARTESIAN, lw=2.0, marker="o", ms=4)
 
     ax.set_xlim(x[0] * 0.7, x[-1] * 2.2)
-    ax.set_ylim(min(brunnr) * 0.5, max(full) * 2)
+    ax.set_ylim(min(artesian) * 0.5, max(full) * 2)
     ax.spines["bottom"].set_bounds(x[0], x[-1])
-    ax.spines["left"].set_bounds(min(brunnr), max(full))
+    ax.spines["left"].set_bounds(min(artesian), max(full))
     ax.tick_params(direction="in", length=3, width=0.5)
 
     ax.set_xticks(x)
@@ -94,10 +94,10 @@ def main():
                 textcoords="offset points", color=FULL, va="center", fontsize=12)
     ax.annotate("md / OKF index-first", xy=(x[-1], mdokf[-1]), xytext=(10, 0),
                 textcoords="offset points", color=MDOKF, va="center", fontsize=12)
-    ax.annotate("Brunnr (memory.context)", xy=(x[-1], brunnr[-1]), xytext=(10, 0),
-                textcoords="offset points", color=BRUNNR, va="center", fontsize=12)
+    ax.annotate("Artesian (memory.context)", xy=(x[-1], artesian[-1]), xytext=(10, 0),
+                textcoords="offset points", color=ARTESIAN, va="center", fontsize=12)
 
-    # annotate Brunnr's saving vs full replay at each point
+    # annotate Artesian's saving vs full replay at each point
     for fx, _m, b in pts:
         ax.annotate(f"{100*(fx-b)/fx:.1f}% less", xy=(fx, b), xytext=(0, -16),
                     textcoords="offset points", color="#666666", ha="center",
@@ -106,7 +106,7 @@ def main():
     fig.text(0.09, 0.97, "One query stays ~1,000 tokens, however large the memory",
              fontsize=17, fontfamily="serif", color="#111111")
     fig.text(0.09, 0.925,
-             "Full replay and a markdown/OKF index both grow with the history; only Brunnr stays flat (log–log)",
+             "Full replay and a markdown/OKF index both grow with the history; only Artesian stays flat (log–log)",
              fontsize=12, fontfamily="serif", color="#666666")
 
     plt.subplots_adjust(top=0.86, left=0.09, right=0.78, bottom=0.13)

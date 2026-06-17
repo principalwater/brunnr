@@ -48,13 +48,13 @@
         }
       }
     },
-    "B-default-brunnr": {
+    "B-default-artesian": {
       "runs": 12,
       "success_rate": 1.0,
       "success_rate_ci95": 0.0,
-      "mean_total_tokens": 712.666667,
+      "mean_total_tokens": 711.666667,
       "total_tokens_variance": 26630.424242,
-      "tokens_per_success": 712.666667,
+      "tokens_per_success": 711.666667,
       "mean_retrieval_precision": 0.444444,
       "mean_retrieval_recall": 1.0,
       "by_difficulty": {
@@ -62,21 +62,21 @@
           "runs": 12,
           "success_rate": 1.0,
           "success_rate_ci95": 0.0,
-          "mean_total_tokens": 712.666667,
+          "mean_total_tokens": 711.666667,
           "total_tokens_variance": 26630.424242,
-          "tokens_per_success": 712.666667,
+          "tokens_per_success": 711.666667,
           "mean_retrieval_precision": 0.444444,
           "mean_retrieval_recall": 1.0
         }
       }
     },
-    "B-default-brunnr-cold-session": {
+    "B-default-artesian-cold-session": {
       "runs": 12,
       "success_rate": 1.0,
       "success_rate_ci95": 0.0,
-      "mean_total_tokens": 715.666667,
+      "mean_total_tokens": 714.666667,
       "total_tokens_variance": 26630.424242,
-      "tokens_per_success": 715.666667,
+      "tokens_per_success": 714.666667,
       "mean_retrieval_precision": 0.444444,
       "mean_retrieval_recall": 1.0,
       "by_difficulty": {
@@ -84,9 +84,9 @@
           "runs": 12,
           "success_rate": 1.0,
           "success_rate_ci95": 0.0,
-          "mean_total_tokens": 715.666667,
+          "mean_total_tokens": 714.666667,
           "total_tokens_variance": 26630.424242,
-          "tokens_per_success": 715.666667,
+          "tokens_per_success": 714.666667,
           "mean_retrieval_precision": 0.444444,
           "mean_retrieval_recall": 1.0
         }
@@ -405,56 +405,56 @@
   ],
   "marginal_verdicts": {
     "B-plus-debate": {
-      "tokens_per_success_delta_vs_b": 29.333333,
+      "tokens_per_success_delta_vs_b": 30.333333,
       "success_rate_delta_vs_b": 0.0,
       "precision_delta_vs_b": 0.0,
       "recall_delta_vs_b": 0.0,
       "verdict": "skip by default; no measured quality gain over B-default in this sample"
     },
     "B-plus-entity-overlap": {
-      "tokens_per_success_delta_vs_b": 0.0,
+      "tokens_per_success_delta_vs_b": 1.0,
       "success_rate_delta_vs_b": 0.0,
       "precision_delta_vs_b": 0.0,
       "recall_delta_vs_b": 0.0,
       "verdict": "skip by default; no measured quality gain over B-default in this sample"
     },
     "B-plus-episode-context": {
-      "tokens_per_success_delta_vs_b": 0.0,
+      "tokens_per_success_delta_vs_b": 1.0,
       "success_rate_delta_vs_b": 0.0,
       "precision_delta_vs_b": 0.0,
       "recall_delta_vs_b": 0.0,
       "verdict": "skip by default; no measured quality gain over B-default in this sample"
     },
     "B-plus-hyde": {
-      "tokens_per_success_delta_vs_b": 182.333333,
+      "tokens_per_success_delta_vs_b": 183.333333,
       "success_rate_delta_vs_b": 0.0,
       "precision_delta_vs_b": -0.055555,
       "recall_delta_vs_b": 0.0,
       "verdict": "skip by default; no measured quality gain over B-default in this sample"
     },
     "B-plus-multi-query": {
-      "tokens_per_success_delta_vs_b": 40.0,
+      "tokens_per_success_delta_vs_b": 41.0,
       "success_rate_delta_vs_b": 0.0,
       "precision_delta_vs_b": 0.0,
       "recall_delta_vs_b": 0.0,
       "verdict": "skip by default; no measured quality gain over B-default in this sample"
     },
     "B-plus-supersession": {
-      "tokens_per_success_delta_vs_b": 0.0,
+      "tokens_per_success_delta_vs_b": 1.0,
       "success_rate_delta_vs_b": 0.0,
       "precision_delta_vs_b": 0.0,
       "recall_delta_vs_b": 0.0,
       "verdict": "skip by default; no measured quality gain over B-default in this sample"
     },
     "B-plus-temporal-decay": {
-      "tokens_per_success_delta_vs_b": 2.0,
+      "tokens_per_success_delta_vs_b": 3.0,
       "success_rate_delta_vs_b": 0.0,
       "precision_delta_vs_b": 0.0,
       "recall_delta_vs_b": 0.0,
       "verdict": "skip by default; no measured quality gain over B-default in this sample"
     },
     "B-reflection-consolidated": {
-      "tokens_per_success_delta_vs_b": 1285.5,
+      "tokens_per_success_delta_vs_b": 1286.5,
       "success_rate_delta_vs_b": 0.0,
       "precision_delta_vs_b": -0.111111,
       "recall_delta_vs_b": 0.0,
@@ -494,7 +494,7 @@
   "large_source_assertions": [
     {
       "task_id": "api-key-rotation",
-      "arm": "B-default-brunnr",
+      "arm": "B-default-artesian",
       "coherence_ok": false,
       "bounded_ok": true,
       "expansion_proven": true,
@@ -502,7 +502,7 @@
     },
     {
       "task_id": "cdn-origin-pull",
-      "arm": "B-default-brunnr",
+      "arm": "B-default-artesian",
       "coherence_ok": true,
       "bounded_ok": true,
       "expansion_proven": true,
@@ -510,7 +510,7 @@
     },
     {
       "task_id": "db-connection-pool-large",
-      "arm": "B-default-brunnr",
+      "arm": "B-default-artesian",
       "coherence_ok": true,
       "bounded_ok": true,
       "expansion_proven": true,
@@ -518,7 +518,7 @@
     },
     {
       "task_id": "email-delivery-config",
-      "arm": "B-default-brunnr",
+      "arm": "B-default-artesian",
       "coherence_ok": true,
       "bounded_ok": true,
       "expansion_proven": true,
@@ -526,7 +526,7 @@
     },
     {
       "task_id": "job-queue-concurrency",
-      "arm": "B-default-brunnr",
+      "arm": "B-default-artesian",
       "coherence_ok": true,
       "bounded_ok": true,
       "expansion_proven": true,
@@ -534,7 +534,7 @@
     },
     {
       "task_id": "mobile-push-ttl",
-      "arm": "B-default-brunnr",
+      "arm": "B-default-artesian",
       "coherence_ok": false,
       "bounded_ok": true,
       "expansion_proven": true,

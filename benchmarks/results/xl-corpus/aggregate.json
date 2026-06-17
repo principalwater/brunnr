@@ -88,13 +88,13 @@
         }
       }
     },
-    "B-default-brunnr": {
+    "B-default-artesian": {
       "runs": 80,
       "success_rate": 1.0,
       "success_rate_ci95": 0.0,
-      "mean_total_tokens": 875.975,
+      "mean_total_tokens": 874.975,
       "total_tokens_variance": 164.936076,
-      "tokens_per_success": 875.975,
+      "tokens_per_success": 874.975,
       "mean_retrieval_precision": 0.333333,
       "mean_retrieval_recall": 1.0,
       "by_difficulty": {
@@ -102,9 +102,9 @@
           "runs": 28,
           "success_rate": 1.0,
           "success_rate_ci95": 0.0,
-          "mean_total_tokens": 872.857143,
+          "mean_total_tokens": 871.857143,
           "total_tokens_variance": 190.349206,
-          "tokens_per_success": 872.857143,
+          "tokens_per_success": 871.857143,
           "mean_retrieval_precision": 0.333333,
           "mean_retrieval_recall": 1.0
         },
@@ -112,9 +112,9 @@
           "runs": 26,
           "success_rate": 1.0,
           "success_rate_ci95": 0.0,
-          "mean_total_tokens": 882.692308,
+          "mean_total_tokens": 881.692308,
           "total_tokens_variance": 151.421538,
-          "tokens_per_success": 882.692308,
+          "tokens_per_success": 881.692308,
           "mean_retrieval_precision": 0.333333,
           "mean_retrieval_recall": 1.0
         },
@@ -122,21 +122,21 @@
           "runs": 26,
           "success_rate": 1.0,
           "success_rate_ci95": 0.0,
-          "mean_total_tokens": 872.615385,
+          "mean_total_tokens": 871.615385,
           "total_tokens_variance": 94.646154,
-          "tokens_per_success": 872.615385,
+          "tokens_per_success": 871.615385,
           "mean_retrieval_precision": 0.333333,
           "mean_retrieval_recall": 1.0
         }
       }
     },
-    "B-default-brunnr-cold-session": {
+    "B-default-artesian-cold-session": {
       "runs": 80,
       "success_rate": 1.0,
       "success_rate_ci95": 0.0,
-      "mean_total_tokens": 878.975,
+      "mean_total_tokens": 877.975,
       "total_tokens_variance": 164.936076,
-      "tokens_per_success": 878.975,
+      "tokens_per_success": 877.975,
       "mean_retrieval_precision": 0.333333,
       "mean_retrieval_recall": 1.0,
       "by_difficulty": {
@@ -144,9 +144,9 @@
           "runs": 28,
           "success_rate": 1.0,
           "success_rate_ci95": 0.0,
-          "mean_total_tokens": 875.857143,
+          "mean_total_tokens": 874.857143,
           "total_tokens_variance": 190.349206,
-          "tokens_per_success": 875.857143,
+          "tokens_per_success": 874.857143,
           "mean_retrieval_precision": 0.333333,
           "mean_retrieval_recall": 1.0
         },
@@ -154,9 +154,9 @@
           "runs": 26,
           "success_rate": 1.0,
           "success_rate_ci95": 0.0,
-          "mean_total_tokens": 885.692308,
+          "mean_total_tokens": 884.692308,
           "total_tokens_variance": 151.421538,
-          "tokens_per_success": 885.692308,
+          "tokens_per_success": 884.692308,
           "mean_retrieval_precision": 0.333333,
           "mean_retrieval_recall": 1.0
         },
@@ -164,9 +164,9 @@
           "runs": 26,
           "success_rate": 1.0,
           "success_rate_ci95": 0.0,
-          "mean_total_tokens": 875.615385,
+          "mean_total_tokens": 874.615385,
           "total_tokens_variance": 94.646154,
-          "tokens_per_success": 875.615385,
+          "tokens_per_success": 874.615385,
           "mean_retrieval_precision": 0.333333,
           "mean_retrieval_recall": 1.0
         }
@@ -1309,28 +1309,28 @@
   ],
   "marginal_verdicts": {
     "B-plus-debate": {
-      "tokens_per_success_delta_vs_b": 31.25,
+      "tokens_per_success_delta_vs_b": 32.25,
       "success_rate_delta_vs_b": 0.0,
       "precision_delta_vs_b": 0.0,
       "recall_delta_vs_b": 0.0,
       "verdict": "skip by default; no measured quality gain over B-default in this sample"
     },
     "B-plus-hyde": {
-      "tokens_per_success_delta_vs_b": 714.155435,
+      "tokens_per_success_delta_vs_b": 715.155435,
       "success_rate_delta_vs_b": -0.425,
       "precision_delta_vs_b": -0.141667,
       "recall_delta_vs_b": -0.425,
       "verdict": "skip by default; no measured quality gain over B-default in this sample"
     },
     "B-plus-multi-query": {
-      "tokens_per_success_delta_vs_b": 47.875,
+      "tokens_per_success_delta_vs_b": 48.875,
       "success_rate_delta_vs_b": 0.0,
       "precision_delta_vs_b": 0.0,
       "recall_delta_vs_b": 0.0,
       "verdict": "skip by default; no measured quality gain over B-default in this sample"
     },
     "B-reflection-consolidated": {
-      "tokens_per_success_delta_vs_b": 377.425,
+      "tokens_per_success_delta_vs_b": 378.425,
       "success_rate_delta_vs_b": 0.0,
       "precision_delta_vs_b": 0.0,
       "recall_delta_vs_b": 0.0,

@@ -1,8 +1,8 @@
 Tokens per success (lower is better; tokenizer=cl100k_base)
 A-full-replay                           2988.25 ########################################################################################################################
 A-full-replay-cold-session              2991.25 ########################################################################################################################
-B-default-brunnr                        1076.31 ###########################################
-B-default-brunnr-cold-session           1080.06 ###########################################
+B-default-artesian                      1075.06 ###########################################
+B-default-artesian-cold-session         1078.81 ###########################################
 B-plus-debate                           1112.88 #############################################
 B-plus-entity-overlap                   1076.31 ###########################################
 B-plus-episode-context                  1076.31 ###########################################
@@ -16,14 +16,14 @@ D-no-memory                                0.00 #
 E-md-okf-index-first                    1077.56 ###########################################
 
 Retrieval misses (recall < 1.0)
-B-default-brunnr access-token-ttl recall=0 relevant=["memory/auth-token-ttl.md"] retrieved=["distractors/security-overview.md", "memory/api-versioning.md", "memory/datastore-choice.md"]
-B-default-brunnr backup-rpo recall=0 relevant=["memory/backup-policy.md"] retrieved=["memory/datastore-choice.md", "memory/incident-march-postmortem.md", "memory/tenancy-model.md"]
-B-default-brunnr canary-hold-time recall=0 relevant=["memory/deploy-strategy.md"] retrieved=["distractors/deployment-checklist.md", "distractors/glossary.md", "memory/incident-march-postmortem.md"]
-B-default-brunnr max-upload-size recall=0 relevant=["memory/upload-limits.md"] retrieved=["distractors/storage-overview.md", "memory/incident-march-postmortem.md", "memory/slo-policy.md"]
-B-default-brunnr-cold-session access-token-ttl recall=0 relevant=["memory/auth-token-ttl.md"] retrieved=["distractors/security-overview.md", "memory/api-versioning.md", "memory/datastore-choice.md"]
-B-default-brunnr-cold-session backup-rpo recall=0 relevant=["memory/backup-policy.md"] retrieved=["memory/datastore-choice.md", "memory/incident-march-postmortem.md", "memory/tenancy-model.md"]
-B-default-brunnr-cold-session canary-hold-time recall=0 relevant=["memory/deploy-strategy.md"] retrieved=["distractors/deployment-checklist.md", "distractors/glossary.md", "memory/incident-march-postmortem.md"]
-B-default-brunnr-cold-session max-upload-size recall=0 relevant=["memory/upload-limits.md"] retrieved=["distractors/storage-overview.md", "memory/incident-march-postmortem.md", "memory/slo-policy.md"]
+B-default-artesian access-token-ttl recall=0 relevant=["memory/auth-token-ttl.md"] retrieved=["distractors/security-overview.md", "memory/api-versioning.md", "memory/datastore-choice.md"]
+B-default-artesian backup-rpo recall=0 relevant=["memory/backup-policy.md"] retrieved=["memory/datastore-choice.md", "memory/incident-march-postmortem.md", "memory/tenancy-model.md"]
+B-default-artesian canary-hold-time recall=0 relevant=["memory/deploy-strategy.md"] retrieved=["distractors/deployment-checklist.md", "distractors/glossary.md", "memory/incident-march-postmortem.md"]
+B-default-artesian max-upload-size recall=0 relevant=["memory/upload-limits.md"] retrieved=["distractors/storage-overview.md", "memory/incident-march-postmortem.md", "memory/slo-policy.md"]
+B-default-artesian-cold-session access-token-ttl recall=0 relevant=["memory/auth-token-ttl.md"] retrieved=["distractors/security-overview.md", "memory/api-versioning.md", "memory/datastore-choice.md"]
+B-default-artesian-cold-session backup-rpo recall=0 relevant=["memory/backup-policy.md"] retrieved=["memory/datastore-choice.md", "memory/incident-march-postmortem.md", "memory/tenancy-model.md"]
+B-default-artesian-cold-session canary-hold-time recall=0 relevant=["memory/deploy-strategy.md"] retrieved=["distractors/deployment-checklist.md", "distractors/glossary.md", "memory/incident-march-postmortem.md"]
+B-default-artesian-cold-session max-upload-size recall=0 relevant=["memory/upload-limits.md"] retrieved=["distractors/storage-overview.md", "memory/incident-march-postmortem.md", "memory/slo-policy.md"]
 B-plus-debate access-token-ttl recall=0 relevant=["memory/auth-token-ttl.md"] retrieved=["distractors/security-overview.md", "memory/api-versioning.md", "memory/datastore-choice.md"]
 B-plus-debate backup-rpo recall=0 relevant=["memory/backup-policy.md"] retrieved=["memory/datastore-choice.md", "memory/incident-march-postmortem.md", "memory/tenancy-model.md"]
 B-plus-debate canary-hold-time recall=0 relevant=["memory/deploy-strategy.md"] retrieved=["distractors/deployment-checklist.md", "distractors/glossary.md", "memory/incident-march-postmortem.md"]
@@ -96,14 +96,14 @@ E-md-okf-index-first canary-hold-time recall=0 relevant=["memory/deploy-strategy
 E-md-okf-index-first max-upload-size recall=0 relevant=["memory/upload-limits.md"] retrieved=["distractors/storage-overview.md", "memory/incident-march-postmortem.md", "memory/slo-policy.md"]
 
 Opt-in marginal verdicts
-B-plus-debate: delta_tokens=Some(36.5625) delta_success=0 delta_precision=0 delta_recall=0 skip by default; no measured quality gain over B-default in this sample
-B-plus-entity-overlap: delta_tokens=Some(0.0) delta_success=0 delta_precision=0 delta_recall=0 skip by default; no measured quality gain over B-default in this sample
-B-plus-episode-context: delta_tokens=Some(0.0) delta_success=0 delta_precision=0 delta_recall=0 skip by default; no measured quality gain over B-default in this sample
-B-plus-hyde: delta_tokens=Some(943.243056) delta_success=-0.35 delta_precision=-0.116666 delta_recall=-0.35 skip by default; no measured quality gain over B-default in this sample
-B-plus-multi-query: delta_tokens=Some(568.778409) delta_success=-0.25 delta_precision=-0.083333 delta_recall=-0.25 skip by default; no measured quality gain over B-default in this sample
-B-plus-supersession: delta_tokens=Some(0.0) delta_success=0 delta_precision=0 delta_recall=0 skip by default; no measured quality gain over B-default in this sample
-B-plus-temporal-decay: delta_tokens=Some(2.5) delta_success=0 delta_precision=0 delta_recall=0 skip by default; no measured quality gain over B-default in this sample
-B-reflection-consolidated: delta_tokens=Some(37.950658) delta_success=0.15 delta_precision=0.05 delta_recall=0.15 recommend for the task classes where the measured recall gain appears
+B-plus-debate: delta_tokens=Some(37.8125) delta_success=0 delta_precision=0 delta_recall=0 skip by default; no measured quality gain over B-default in this sample
+B-plus-entity-overlap: delta_tokens=Some(1.25) delta_success=0 delta_precision=0 delta_recall=0 skip by default; no measured quality gain over B-default in this sample
+B-plus-episode-context: delta_tokens=Some(1.25) delta_success=0 delta_precision=0 delta_recall=0 skip by default; no measured quality gain over B-default in this sample
+B-plus-hyde: delta_tokens=Some(944.493056) delta_success=-0.35 delta_precision=-0.116666 delta_recall=-0.35 skip by default; no measured quality gain over B-default in this sample
+B-plus-multi-query: delta_tokens=Some(570.028409) delta_success=-0.25 delta_precision=-0.083333 delta_recall=-0.25 skip by default; no measured quality gain over B-default in this sample
+B-plus-supersession: delta_tokens=Some(1.25) delta_success=0 delta_precision=0 delta_recall=0 skip by default; no measured quality gain over B-default in this sample
+B-plus-temporal-decay: delta_tokens=Some(3.75) delta_success=0 delta_precision=0 delta_recall=0 skip by default; no measured quality gain over B-default in this sample
+B-reflection-consolidated: delta_tokens=Some(39.200658) delta_success=0.15 delta_precision=0.05 delta_recall=0.15 recommend for the task classes where the measured recall gain appears
 
 Signal arm focused evaluation (ability-tagged tasks only)
 B-plus-entity-overlap [entity-disambiguation] n=0 delta_recall=+0.000 delta_precision=+0.000 → no ability-tagged tasks in this corpus; keeping OFF

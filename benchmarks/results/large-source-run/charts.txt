@@ -1,8 +1,8 @@
 Tokens per success (lower is better; tokenizer=cl100k_base)
 A-full-replay                           9067.33 ###########################################################################################################################################################################################################################################################################################################################################################################
 A-full-replay-cold-session              9070.33 ###########################################################################################################################################################################################################################################################################################################################################################################
-B-default-brunnr                         712.67 #############################
-B-default-brunnr-cold-session            715.67 #############################
+B-default-artesian                       711.67 ############################
+B-default-artesian-cold-session          714.67 #############################
 B-plus-debate                            742.00 ##############################
 B-plus-entity-overlap                    712.67 #############################
 B-plus-episode-context                   712.67 #############################
@@ -24,14 +24,14 @@ D-no-memory job-queue-concurrency recall=0 relevant=["memory/job-queue-concurren
 D-no-memory mobile-push-ttl recall=0 relevant=["memory/mobile-push-ttl.md"] retrieved=[]
 
 Opt-in marginal verdicts
-B-plus-debate: delta_tokens=Some(29.333333) delta_success=0 delta_precision=0 delta_recall=0 skip by default; no measured quality gain over B-default in this sample
-B-plus-entity-overlap: delta_tokens=Some(0.0) delta_success=0 delta_precision=0 delta_recall=0 skip by default; no measured quality gain over B-default in this sample
-B-plus-episode-context: delta_tokens=Some(0.0) delta_success=0 delta_precision=0 delta_recall=0 skip by default; no measured quality gain over B-default in this sample
-B-plus-hyde: delta_tokens=Some(182.333333) delta_success=0 delta_precision=-0.055555 delta_recall=0 skip by default; no measured quality gain over B-default in this sample
-B-plus-multi-query: delta_tokens=Some(40.0) delta_success=0 delta_precision=0 delta_recall=0 skip by default; no measured quality gain over B-default in this sample
-B-plus-supersession: delta_tokens=Some(0.0) delta_success=0 delta_precision=0 delta_recall=0 skip by default; no measured quality gain over B-default in this sample
-B-plus-temporal-decay: delta_tokens=Some(2.0) delta_success=0 delta_precision=0 delta_recall=0 skip by default; no measured quality gain over B-default in this sample
-B-reflection-consolidated: delta_tokens=Some(1285.5) delta_success=0 delta_precision=-0.111111 delta_recall=0 skip by default; no measured quality gain over B-default in this sample
+B-plus-debate: delta_tokens=Some(30.333333) delta_success=0 delta_precision=0 delta_recall=0 skip by default; no measured quality gain over B-default in this sample
+B-plus-entity-overlap: delta_tokens=Some(1.0) delta_success=0 delta_precision=0 delta_recall=0 skip by default; no measured quality gain over B-default in this sample
+B-plus-episode-context: delta_tokens=Some(1.0) delta_success=0 delta_precision=0 delta_recall=0 skip by default; no measured quality gain over B-default in this sample
+B-plus-hyde: delta_tokens=Some(183.333333) delta_success=0 delta_precision=-0.055555 delta_recall=0 skip by default; no measured quality gain over B-default in this sample
+B-plus-multi-query: delta_tokens=Some(41.0) delta_success=0 delta_precision=0 delta_recall=0 skip by default; no measured quality gain over B-default in this sample
+B-plus-supersession: delta_tokens=Some(1.0) delta_success=0 delta_precision=0 delta_recall=0 skip by default; no measured quality gain over B-default in this sample
+B-plus-temporal-decay: delta_tokens=Some(3.0) delta_success=0 delta_precision=0 delta_recall=0 skip by default; no measured quality gain over B-default in this sample
+B-reflection-consolidated: delta_tokens=Some(1286.5) delta_success=0 delta_precision=-0.111111 delta_recall=0 skip by default; no measured quality gain over B-default in this sample
 
 Signal arm focused evaluation (ability-tagged tasks only)
 B-plus-entity-overlap [entity-disambiguation] n=0 delta_recall=+0.000 delta_precision=+0.000 → no ability-tagged tasks in this corpus; keeping OFF

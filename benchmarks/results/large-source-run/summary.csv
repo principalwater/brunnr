@@ -1,8 +1,8 @@
 arm,runs,success_rate,mean_total_tokens,tokens_per_success,precision,recall
 A-full-replay,12,1,9067.333333,9067.333333,0.1,1
 A-full-replay-cold-session,12,1,9070.333333,9070.333333,0.1,1
-B-default-brunnr,12,1,712.666667,712.666667,0.444444,1
-B-default-brunnr-cold-session,12,1,715.666667,715.666667,0.444444,1
+B-default-artesian,12,1,711.666667,711.666667,0.444444,1
+B-default-artesian-cold-session,12,1,714.666667,714.666667,0.444444,1
 B-plus-debate,12,1,742,742,0.444444,1
 B-plus-entity-overlap,12,1,712.666667,712.666667,0.444444,1
 B-plus-episode-context,12,1,712.666667,712.666667,0.444444,1

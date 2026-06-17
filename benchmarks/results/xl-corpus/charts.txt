@@ -1,8 +1,8 @@
 Tokens per success (lower is better; tokenizer=cl100k_base)
 A-full-replay                          12902.25 ####################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################
 A-full-replay-cold-session             12905.25 ####################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################
-B-default-brunnr                         875.98 ###################################
-B-default-brunnr-cold-session            878.98 ###################################
+B-default-artesian                       874.98 ###################################
+B-default-artesian-cold-session          877.98 ###################################
 B-plus-debate                            907.23 ####################################
 B-plus-hyde                             1590.13 ################################################################
 B-plus-multi-query                       923.85 #####################################
@@ -82,7 +82,7 @@ D-no-memory xl-38-geocoding-service recall=0 relevant=["memory/geocoding-service
 D-no-memory xl-39-auth-indexer recall=0 relevant=["memory/auth-indexer.md"] retrieved=[]
 
 Opt-in marginal verdicts
-B-plus-debate: delta_tokens=Some(31.25) delta_success=0 delta_precision=0 delta_recall=0 skip by default; no measured quality gain over B-default in this sample
-B-plus-hyde: delta_tokens=Some(714.155435) delta_success=-0.425 delta_precision=-0.141667 delta_recall=-0.425 skip by default; no measured quality gain over B-default in this sample
-B-plus-multi-query: delta_tokens=Some(47.875) delta_success=0 delta_precision=0 delta_recall=0 skip by default; no measured quality gain over B-default in this sample
-B-reflection-consolidated: delta_tokens=Some(377.425) delta_success=0 delta_precision=0 delta_recall=0 skip by default; no measured quality gain over B-default in this sample
+B-plus-debate: delta_tokens=Some(32.25) delta_success=0 delta_precision=0 delta_recall=0 skip by default; no measured quality gain over B-default in this sample
+B-plus-hyde: delta_tokens=Some(715.155435) delta_success=-0.425 delta_precision=-0.141667 delta_recall=-0.425 skip by default; no measured quality gain over B-default in this sample
+B-plus-multi-query: delta_tokens=Some(48.875) delta_success=0 delta_precision=0 delta_recall=0 skip by default; no measured quality gain over B-default in this sample
+B-reflection-consolidated: delta_tokens=Some(378.425) delta_success=0 delta_precision=0 delta_recall=0 skip by default; no measured quality gain over B-default in this sample

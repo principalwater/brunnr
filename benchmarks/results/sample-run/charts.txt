@@ -1,8 +1,8 @@
 Tokens per success (lower is better; tokenizer=cl100k_base)
 A-full-replay                           2378.07 ###############################################################################################
 A-full-replay-cold-session              2381.07 ###############################################################################################
-B-default-brunnr                        1028.18 #########################################
-B-default-brunnr-cold-session           1032.00 #########################################
+B-default-artesian                      1026.91 #########################################
+B-default-artesian-cold-session         1030.73 #########################################
 B-plus-debate                           1066.45 ###########################################
 B-plus-entity-overlap                   1028.18 #########################################
 B-plus-episode-context                  1028.18 #########################################
@@ -16,12 +16,12 @@ D-no-memory                                0.00 #
 E-md-okf-index-first                    1029.45 #########################################
 
 Retrieval misses (recall < 1.0)
-B-default-brunnr access-token-ttl recall=0 relevant=["memory/auth-token-ttl.md"] retrieved=["distractors/march-outage-briefing.md", "distractors/rate-limit-v1.md", "memory/pg-pool-config.md"]
-B-default-brunnr march-outage-root-cause recall=0 relevant=["memory/incident-march-postmortem.md"] retrieved=["distractors/march-outage-briefing.md", "memory/background-job-retry.md", "memory/deploy-strategy-v2.md"]
-B-default-brunnr retry-max-attempts recall=0 relevant=["memory/retry-policy.md"] retrieved=["distractors/march-outage-briefing.md", "distractors/rate-limit-v1.md", "memory/background-job-retry.md"]
-B-default-brunnr-cold-session access-token-ttl recall=0 relevant=["memory/auth-token-ttl.md"] retrieved=["distractors/march-outage-briefing.md", "distractors/rate-limit-v1.md", "memory/pg-pool-config.md"]
-B-default-brunnr-cold-session march-outage-root-cause recall=0 relevant=["memory/incident-march-postmortem.md"] retrieved=["distractors/march-outage-briefing.md", "memory/background-job-retry.md", "memory/deploy-strategy-v2.md"]
-B-default-brunnr-cold-session retry-max-attempts recall=0 relevant=["memory/retry-policy.md"] retrieved=["distractors/march-outage-briefing.md", "distractors/rate-limit-v1.md", "memory/background-job-retry.md"]
+B-default-artesian access-token-ttl recall=0 relevant=["memory/auth-token-ttl.md"] retrieved=["distractors/march-outage-briefing.md", "distractors/rate-limit-v1.md", "memory/pg-pool-config.md"]
+B-default-artesian march-outage-root-cause recall=0 relevant=["memory/incident-march-postmortem.md"] retrieved=["distractors/march-outage-briefing.md", "memory/background-job-retry.md", "memory/deploy-strategy-v2.md"]
+B-default-artesian retry-max-attempts recall=0 relevant=["memory/retry-policy.md"] retrieved=["distractors/march-outage-briefing.md", "distractors/rate-limit-v1.md", "memory/background-job-retry.md"]
+B-default-artesian-cold-session access-token-ttl recall=0 relevant=["memory/auth-token-ttl.md"] retrieved=["distractors/march-outage-briefing.md", "distractors/rate-limit-v1.md", "memory/pg-pool-config.md"]
+B-default-artesian-cold-session march-outage-root-cause recall=0 relevant=["memory/incident-march-postmortem.md"] retrieved=["distractors/march-outage-briefing.md", "memory/background-job-retry.md", "memory/deploy-strategy-v2.md"]
+B-default-artesian-cold-session retry-max-attempts recall=0 relevant=["memory/retry-policy.md"] retrieved=["distractors/march-outage-briefing.md", "distractors/rate-limit-v1.md", "memory/background-job-retry.md"]
 B-plus-debate access-token-ttl recall=0 relevant=["memory/auth-token-ttl.md"] retrieved=["distractors/march-outage-briefing.md", "distractors/rate-limit-v1.md", "memory/pg-pool-config.md"]
 B-plus-debate march-outage-root-cause recall=0 relevant=["memory/incident-march-postmortem.md"] retrieved=["distractors/march-outage-briefing.md", "memory/background-job-retry.md", "memory/deploy-strategy-v2.md"]
 B-plus-debate retry-max-attempts recall=0 relevant=["memory/retry-policy.md"] retrieved=["distractors/march-outage-briefing.md", "distractors/rate-limit-v1.md", "memory/background-job-retry.md"]
@@ -81,14 +81,14 @@ E-md-okf-index-first march-outage-root-cause recall=0 relevant=["memory/incident
 E-md-okf-index-first retry-max-attempts recall=0 relevant=["memory/retry-policy.md"] retrieved=["distractors/march-outage-briefing.md", "distractors/rate-limit-v1.md", "memory/background-job-retry.md"]
 
 Opt-in marginal verdicts
-B-plus-debate: delta_tokens=Some(38.272727) delta_success=0 delta_precision=0 delta_recall=0 skip by default; no measured quality gain over B-default in this sample
-B-plus-entity-overlap: delta_tokens=Some(0.0) delta_success=0 delta_precision=0 delta_recall=0 skip by default; no measured quality gain over B-default in this sample
-B-plus-episode-context: delta_tokens=Some(0.0) delta_success=0 delta_precision=0 delta_recall=0 skip by default; no measured quality gain over B-default in this sample
-B-plus-hyde: delta_tokens=Some(982.651515) delta_success=-0.357143 delta_precision=-0.119047 delta_recall=-0.321428 skip by default; no measured quality gain over B-default in this sample
-B-plus-multi-query: delta_tokens=Some(490.568182) delta_success=-0.214285 delta_precision=-0.071428 delta_recall=-0.214285 skip by default; no measured quality gain over B-default in this sample
-B-plus-supersession: delta_tokens=Some(0.0) delta_success=0 delta_precision=0 delta_recall=0 skip by default; no measured quality gain over B-default in this sample
-B-plus-temporal-decay: delta_tokens=Some(2.545455) delta_success=0 delta_precision=0 delta_recall=0 skip by default; no measured quality gain over B-default in this sample
-B-reflection-consolidated: delta_tokens=Some(57.587413) delta_success=0.142857 delta_precision=0.047619 delta_recall=0.142857 recommend for the task classes where the measured recall gain appears
+B-plus-debate: delta_tokens=Some(39.545454) delta_success=0 delta_precision=0 delta_recall=0 skip by default; no measured quality gain over B-default in this sample
+B-plus-entity-overlap: delta_tokens=Some(1.272727) delta_success=0 delta_precision=0 delta_recall=0 skip by default; no measured quality gain over B-default in this sample
+B-plus-episode-context: delta_tokens=Some(1.272727) delta_success=0 delta_precision=0 delta_recall=0 skip by default; no measured quality gain over B-default in this sample
+B-plus-hyde: delta_tokens=Some(983.924242) delta_success=-0.357143 delta_precision=-0.119047 delta_recall=-0.321428 skip by default; no measured quality gain over B-default in this sample
+B-plus-multi-query: delta_tokens=Some(491.840909) delta_success=-0.214285 delta_precision=-0.071428 delta_recall=-0.214285 skip by default; no measured quality gain over B-default in this sample
+B-plus-supersession: delta_tokens=Some(1.272727) delta_success=0 delta_precision=0 delta_recall=0 skip by default; no measured quality gain over B-default in this sample
+B-plus-temporal-decay: delta_tokens=Some(3.818182) delta_success=0 delta_precision=0 delta_recall=0 skip by default; no measured quality gain over B-default in this sample
+B-reflection-consolidated: delta_tokens=Some(58.86014) delta_success=0.142857 delta_precision=0.047619 delta_recall=0.142857 recommend for the task classes where the measured recall gain appears
 
 Signal arm focused evaluation (ability-tagged tasks only)
 B-plus-entity-overlap [entity-disambiguation] n=4 delta_recall=+0.000 delta_precision=+0.000 → keep OFF (delta recall=+0.00 precision=+0.00 on entity-disambiguation tasks)

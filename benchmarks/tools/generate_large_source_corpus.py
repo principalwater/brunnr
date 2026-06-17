@@ -6,10 +6,10 @@ Each memory doc is a large (several KB) technical markdown document with one
 critical answer buried mid-document, demonstrating that:
 
   - Full-replay tokens ≈ corpus_size (grows with doc count × doc size)
-  - Brunnr tokens ≈ top_k × chunk_size  (~bounded, ~1 200 tokens)
+  - Artesian tokens ≈ top_k × chunk_size  (~bounded, ~1 200 tokens)
 
 The corpus and benchmark are deterministic (fixed templates, no randomness).
-Run this script before `cargo run -p brunnr-bench -- --seed-corpus benchmarks/large-source-corpus`.
+Run this script before `cargo run -p artesian-bench -- --seed-corpus benchmarks/large-source-corpus`.
 """
 from __future__ import annotations
 
@@ -314,7 +314,7 @@ def main() -> None:
         "suite": "seed-honest-v1",
         "notes": (
             "Large-source-doc tier: each memory doc is several KB with the critical "
-            "answer buried mid-document. Demonstrates that Brunnr retrieves the relevant "
+            "answer buried mid-document. Demonstrates that Artesian retrieves the relevant "
             "chunk (~top_k × chunk_size ≈ 1 200 tokens) while full-replay grows linearly "
             "with corpus size."
         ),

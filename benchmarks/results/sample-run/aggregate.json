@@ -88,13 +88,13 @@
         }
       }
     },
-    "B-default-brunnr": {
+    "B-default-artesian": {
       "runs": 28,
       "success_rate": 0.785714,
       "success_rate_ci95": 0.154776,
-      "mean_total_tokens": 807.857143,
+      "mean_total_tokens": 806.857143,
       "total_tokens_variance": 728.275132,
-      "tokens_per_success": 1028.181818,
+      "tokens_per_success": 1026.909091,
       "mean_retrieval_precision": 0.285714,
       "mean_retrieval_recall": 0.785714,
       "by_difficulty": {
@@ -102,9 +102,9 @@
           "runs": 4,
           "success_rate": 0.5,
           "success_rate_ci95": 0.565803,
-          "mean_total_tokens": 787.5,
+          "mean_total_tokens": 786.5,
           "total_tokens_variance": 1875.0,
-          "tokens_per_success": 1575.0,
+          "tokens_per_success": 1573.0,
           "mean_retrieval_precision": 0.166667,
           "mean_retrieval_recall": 0.5
         },
@@ -112,9 +112,9 @@
           "runs": 12,
           "success_rate": 0.833333,
           "success_rate_ci95": 0.220239,
-          "mean_total_tokens": 814.666667,
+          "mean_total_tokens": 813.666667,
           "total_tokens_variance": 808.969697,
-          "tokens_per_success": 977.6,
+          "tokens_per_success": 976.4,
           "mean_retrieval_precision": 0.333333,
           "mean_retrieval_recall": 0.833333
         },
@@ -122,21 +122,21 @@
           "runs": 12,
           "success_rate": 0.833333,
           "success_rate_ci95": 0.220239,
-          "mean_total_tokens": 807.833333,
+          "mean_total_tokens": 806.833333,
           "total_tokens_variance": 265.969697,
-          "tokens_per_success": 969.4,
+          "tokens_per_success": 968.2,
           "mean_retrieval_precision": 0.277778,
           "mean_retrieval_recall": 0.833333
         }
       }
     },
-    "B-default-brunnr-cold-session": {
+    "B-default-artesian-cold-session": {
       "runs": 28,
       "success_rate": 0.785714,
       "success_rate_ci95": 0.154776,
-      "mean_total_tokens": 810.857143,
+      "mean_total_tokens": 809.857143,
       "total_tokens_variance": 728.275132,
-      "tokens_per_success": 1032.0,
+      "tokens_per_success": 1030.727273,
       "mean_retrieval_precision": 0.285714,
       "mean_retrieval_recall": 0.785714,
       "by_difficulty": {
@@ -144,9 +144,9 @@
           "runs": 4,
           "success_rate": 0.5,
           "success_rate_ci95": 0.565803,
-          "mean_total_tokens": 790.5,
+          "mean_total_tokens": 789.5,
           "total_tokens_variance": 1875.0,
-          "tokens_per_success": 1581.0,
+          "tokens_per_success": 1579.0,
           "mean_retrieval_precision": 0.166667,
           "mean_retrieval_recall": 0.5
         },
@@ -154,9 +154,9 @@
           "runs": 12,
           "success_rate": 0.833333,
           "success_rate_ci95": 0.220239,
-          "mean_total_tokens": 817.666667,
+          "mean_total_tokens": 816.666667,
           "total_tokens_variance": 808.969697,
-          "tokens_per_success": 981.2,
+          "tokens_per_success": 980.0,
           "mean_retrieval_precision": 0.333333,
           "mean_retrieval_recall": 0.833333
         },
@@ -164,9 +164,9 @@
           "runs": 12,
           "success_rate": 0.833333,
           "success_rate_ci95": 0.220239,
-          "mean_total_tokens": 810.833333,
+          "mean_total_tokens": 809.833333,
           "total_tokens_variance": 265.969697,
-          "tokens_per_success": 973.0,
+          "tokens_per_success": 971.8,
           "mean_retrieval_precision": 0.277778,
           "mean_retrieval_recall": 0.833333
         }
@@ -637,7 +637,7 @@
   },
   "retrieval_misses": [
     {
-      "arm": "B-default-brunnr",
+      "arm": "B-default-artesian",
       "task_id": "access-token-ttl",
       "difficulty": "easy",
       "relevant_docs": [
@@ -652,7 +652,7 @@
       "runs": 2
     },
     {
-      "arm": "B-default-brunnr",
+      "arm": "B-default-artesian",
       "task_id": "march-outage-root-cause",
       "difficulty": "hard",
       "relevant_docs": [
@@ -667,7 +667,7 @@
       "runs": 2
     },
     {
-      "arm": "B-default-brunnr",
+      "arm": "B-default-artesian",
       "task_id": "retry-max-attempts",
       "difficulty": "medium",
       "relevant_docs": [
@@ -682,7 +682,7 @@
       "runs": 2
     },
     {
-      "arm": "B-default-brunnr-cold-session",
+      "arm": "B-default-artesian-cold-session",
       "task_id": "access-token-ttl",
       "difficulty": "easy",
       "relevant_docs": [
@@ -697,7 +697,7 @@
       "runs": 2
     },
     {
-      "arm": "B-default-brunnr-cold-session",
+      "arm": "B-default-artesian-cold-session",
       "task_id": "march-outage-root-cause",
       "difficulty": "hard",
       "relevant_docs": [
@@ -712,7 +712,7 @@
       "runs": 2
     },
     {
-      "arm": "B-default-brunnr-cold-session",
+      "arm": "B-default-artesian-cold-session",
       "task_id": "retry-max-attempts",
       "difficulty": "medium",
       "relevant_docs": [
@@ -1511,56 +1511,56 @@
   ],
   "marginal_verdicts": {
     "B-plus-debate": {
-      "tokens_per_success_delta_vs_b": 38.272727,
+      "tokens_per_success_delta_vs_b": 39.545454,
       "success_rate_delta_vs_b": 0.0,
       "precision_delta_vs_b": 0.0,
       "recall_delta_vs_b": 0.0,
       "verdict": "skip by default; no measured quality gain over B-default in this sample"
     },
     "B-plus-entity-overlap": {
-      "tokens_per_success_delta_vs_b": 0.0,
+      "tokens_per_success_delta_vs_b": 1.272727,
       "success_rate_delta_vs_b": 0.0,
       "precision_delta_vs_b": 0.0,
       "recall_delta_vs_b": 0.0,
       "verdict": "skip by default; no measured quality gain over B-default in this sample"
     },
     "B-plus-episode-context": {
-      "tokens_per_success_delta_vs_b": 0.0,
+      "tokens_per_success_delta_vs_b": 1.272727,
       "success_rate_delta_vs_b": 0.0,
       "precision_delta_vs_b": 0.0,
       "recall_delta_vs_b": 0.0,
       "verdict": "skip by default; no measured quality gain over B-default in this sample"
     },
     "B-plus-hyde": {
-      "tokens_per_success_delta_vs_b": 982.651515,
+      "tokens_per_success_delta_vs_b": 983.924242,
       "success_rate_delta_vs_b": -0.357143,
       "precision_delta_vs_b": -0.119047,
       "recall_delta_vs_b": -0.321428,
       "verdict": "skip by default; no measured quality gain over B-default in this sample"
     },
     "B-plus-multi-query": {
-      "tokens_per_success_delta_vs_b": 490.568182,
+      "tokens_per_success_delta_vs_b": 491.840909,
       "success_rate_delta_vs_b": -0.214285,
       "precision_delta_vs_b": -0.071428,
       "recall_delta_vs_b": -0.214285,
       "verdict": "skip by default; no measured quality gain over B-default in this sample"
     },
     "B-plus-supersession": {
-      "tokens_per_success_delta_vs_b": 0.0,
+      "tokens_per_success_delta_vs_b": 1.272727,
       "success_rate_delta_vs_b": 0.0,
       "precision_delta_vs_b": 0.0,
       "recall_delta_vs_b": 0.0,
       "verdict": "skip by default; no measured quality gain over B-default in this sample"
     },
     "B-plus-temporal-decay": {
-      "tokens_per_success_delta_vs_b": 2.545455,
+      "tokens_per_success_delta_vs_b": 3.818182,
       "success_rate_delta_vs_b": 0.0,
       "precision_delta_vs_b": 0.0,
       "recall_delta_vs_b": 0.0,
       "verdict": "skip by default; no measured quality gain over B-default in this sample"
     },
     "B-reflection-consolidated": {
-      "tokens_per_success_delta_vs_b": 57.587413,
+      "tokens_per_success_delta_vs_b": 58.86014,
       "success_rate_delta_vs_b": 0.142857,
       "precision_delta_vs_b": 0.047619,
       "recall_delta_vs_b": 0.142857,
