@@ -52,40 +52,47 @@ The answering/grading LLM is reached through a command. The default wraps `codex
 `--llm-command` at your own wrapper.
 
 ```shell
-cargo build -p gauge --features llm --bin gauge-eval
+# vector recall (real embedding retrieval) needs the `vector` feature; lexical needs only `llm`.
+cargo build -p gauge --features "llm vector" --bin gauge-eval
 
-# Start small; scale up with --limit.
-./target/debug/gauge-eval locomo      benchmarks/comparison/data/locomo10.json     --limit 50
-./target/debug/gauge-eval longmemeval benchmarks/comparison/data/longmemeval_s.json --limit 50 --json
+# --recall lexical (default, deterministic) | vector (embedding + RRF). Scale up with --limit.
+./target/debug/gauge-eval locomo      benchmarks/comparison/data/locomo10.json          --limit 50 --recall vector
+./target/debug/gauge-eval longmemeval benchmarks/comparison/data/longmemeval_oracle.json --limit 50 --recall vector --json
 ```
 
 ## Results
 
-Artesian numbers below are a **20-question sample per dataset**, judge = `codex` gpt-5.5
-(reasoning `xhigh`), **lexical recall** (the deterministic default), LongMemEval on the
-**oracle** split. The mem0 column must be filled from its paper under a matched protocol.
+A **30-question sample per dataset**, judge = `codex` gpt-5.5 (reasoning `xhigh`), comparing the
+two recall strategies. LongMemEval on the **oracle** split. (`graded` < 30 where a `codex` call
+errored and the case was skipped.)
 
-| dataset | system | judge | accuracy | tokens/query | footprint vs full | source |
-|---|---|---|---|---|---|---|
-| LoCoMo | Artesian | gpt-5.5 xhigh | 0.15 (3/20) | 654 | 0.046 | this harness |
-| LoCoMo | mem0 | (paper) | _from paper_ | _from paper_ | _from paper_ | arXiv:2504.19413 |
-| LongMemEval (oracle) | Artesian | gpt-5.5 xhigh | 0.50 (10/20) | 2064 | 0.279 | this harness |
-| LongMemEval | mem0 | (paper) | _from paper_ | _from paper_ | _from paper_ | (mem0 materials) |
+| dataset | recall | accuracy | tokens/query | footprint vs full |
+|---|---|---|---|---|
+| LoCoMo | lexical | 0.103 (3/29) | 671 | 0.047 |
+| LoCoMo | **vector** | **0.276 (8/29)** | 524 | 0.037 |
+| LongMemEval (oracle) | lexical | 0.621 (18/29) | 2064 | 0.288 |
+| LongMemEval (oracle) | **vector** | **0.867 (26/30)** | 2052 | 0.286 |
+
+**mem0** (arXiv:2504.19413, cited — not re-run here; the paper reports *relative* figures, no
+absolute accuracy/tokens in the abstract): **+26 %** LLM-as-judge over OpenAI memory on LoCoMo,
+**91 %** lower p95 latency and **> 90 %** token savings vs. a full-context baseline. A
+same-protocol head-to-head (run mem0 on these splits with this judge/budget) is the remaining
+work to put exact numbers side by side.
 
 **Reading these honestly:**
 
-- **Token efficiency is the headline win.** The committed context fed to the answerer is
-  **4.6 %** of the full LoCoMo conversation (654 vs ~14.3 k tokens) and **28 %** of the
-  LongMemEval-oracle history — the bounded-footprint property a memory *controller* is for, and
-  the axis directly comparable to mem0's "vs full-context" savings.
-- **Accuracy here is a floor, not Artesian's ceiling.** This run uses **lexical (term-overlap)
-  recall** — the dependency-free default — which misses paraphrased evidence, so the right facts
-  often never reach the committed context. The production retrieval path (vector + hybrid RRF +
-  reranking, plus the semantic cache) is expected to lift this substantially; a vector-backend
-  run is the next measurement. LongMemEval (0.50) beats LoCoMo (0.15) largely because the oracle
-  split already narrows the haystack to evidence sessions.
-- **Caveats:** n = 20 (noisy); strict LLM-as-judge; LoCoMo answers are often exact dates/values.
-  Do not read these as a tuned, full-dataset result.
+- **Vector recall is the accuracy win.** Switching from lexical (term-overlap) to the real
+  `VectorMemoryBackend` (embedding + small-to-big + RRF) lifts LoCoMo **0.10 → 0.28** (+167 %)
+  and LongMemEval **0.62 → 0.87** (+40 %) — the lexical default was a floor, exactly as expected,
+  because it misses paraphrased evidence. LongMemEval-oracle vector (0.87) is a competitive
+  result; LoCoMo stays harder (long multi-session temporal reasoning, exact-value answers).
+- **Token efficiency holds throughout.** Committed context is **3.7–4.7 %** of the full LoCoMo
+  conversation and **~29 %** of the LongMemEval-oracle history — the bounded-footprint property
+  a memory *controller* is for, and the axis comparable to mem0's "vs full-context" savings.
+  Vector recall even *reduces* committed tokens (524 vs 671 on LoCoMo) by surfacing fewer, more
+  relevant facts.
+- **Caveats:** n = 30 (still a sample, some noise); strict LLM-as-judge; LoCoMo answers are often
+  exact dates/values; oracle split for LongMemEval. Not a tuned, full-dataset result.
 
 ### Pipeline smoke (not a benchmark result)
 
