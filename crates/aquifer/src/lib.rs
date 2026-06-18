@@ -18,6 +18,7 @@ mod pgvector;
 mod qdrant;
 mod retrieval;
 mod rrf;
+mod semantic_cache;
 #[cfg(feature = "sqlite-vec")]
 mod sqlite_vec;
 pub mod temporal;
@@ -52,6 +53,7 @@ pub use qdrant::{
 pub use retrieval::FastembedReranker;
 pub use retrieval::{LocalLexicalReranker, Reranker};
 pub use rrf::reciprocal_rank_fusion;
+pub use semantic_cache::{cosine_similarity, CachingMemoryBackend, QueryVectorizer, SemanticCache};
 #[cfg(feature = "sqlite-vec")]
 pub use sqlite_vec::{SqliteVecBackend, SqliteVecVectorStore, SqliteVecVectorStoreConfig};
 pub use temporal::{apply_knowledge_supersession, apply_recency_decay};

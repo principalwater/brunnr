@@ -21,6 +21,16 @@ window** (same-parent hits collapsed into one), bounded by an adaptive budget �
 document reachable by `node_id` drill-down. See [memory.md §3.5](memory.md) for the chunking +
 small-to-big algorithm and the adaptive budget.
 
+## Semantic query cache
+
+`CachingMemoryBackend<B, V>` wraps any `MemoryBackend` with a `SemanticCache`: a repeated or
+**paraphrased** query whose embedding is within a cosine threshold of a recent query is served
+from cache instead of re-running search — cutting embedding + ANN work in agent loops that recall
+around the same task. The cache is bounded (LRU) with an optional TTL; only plain text queries are
+cached (a `node_id` or tenancy filter bypasses it), and every `store` clears the cache so a new
+write is never hidden by a stale read. `SemanticCache` is embedder-agnostic via the
+`QueryVectorizer` seam; under feature `vector` the pinned `TextEmbedder` is adapted to it.
+
 ## Hybrid And RRF
 
 Artesian uses reciprocal rank fusion with `rank_constant = 60.0` by default. A document at rank `r`
