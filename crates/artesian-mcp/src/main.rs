@@ -85,6 +85,7 @@ fn load_runtime_config(args: &Args) -> anyhow::Result<RuntimeConfig> {
                 multi_query_enabled: false,
                 debate_enabled: false,
                 llm_consolidation_enabled: false,
+                semantic_cache: Default::default(),
             },
             agents: Vec::new(),
             coordination: Default::default(),

@@ -53,6 +53,8 @@ pub use qdrant::{
 pub use retrieval::FastembedReranker;
 pub use retrieval::{LocalLexicalReranker, Reranker};
 pub use rrf::reciprocal_rank_fusion;
+#[cfg(feature = "vector")]
+pub use semantic_cache::EmbedderVectorizer;
 pub use semantic_cache::{cosine_similarity, CachingMemoryBackend, QueryVectorizer, SemanticCache};
 #[cfg(feature = "sqlite-vec")]
 pub use sqlite_vec::{SqliteVecBackend, SqliteVecVectorStore, SqliteVecVectorStoreConfig};

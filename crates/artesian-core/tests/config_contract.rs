@@ -55,4 +55,22 @@ agent = "claude-code"
     assert_eq!(config.acc, AccConfig::default());
     assert_eq!(config.acc.budget_tokens, 2048);
     assert!(config.acc.compress_on_saturation);
+    // The semantic cache also defaults (disabled) when its block is absent.
+    assert!(!config.memory.semantic_cache.enabled);
+    assert_eq!(config.memory.semantic_cache.capacity, 256);
+}
+
+#[test]
+fn semantic_cache_config_round_trips() {
+    let mut config = ArtesianConfig::memory_files(".artesian", Vec::new());
+    config.memory.semantic_cache.enabled = true;
+    config.memory.semantic_cache.min_similarity = 0.9;
+    config.memory.semantic_cache.ttl_seconds = Some(300);
+
+    let encoded = config.to_toml().expect("encode");
+    let decoded = ArtesianConfig::from_toml(&encoded).expect("decode");
+
+    assert_eq!(decoded, config);
+    assert!(decoded.memory.semantic_cache.enabled);
+    assert_eq!(decoded.memory.semantic_cache.ttl_seconds, Some(300));
 }

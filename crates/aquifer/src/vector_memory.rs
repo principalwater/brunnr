@@ -248,6 +248,21 @@ impl<V: VectorStore> VectorMemoryBackend<V> {
         &self.config
     }
 
+    /// The shared text embedder, for reuse (e.g. keying a semantic cache in the same space).
+    pub fn embedder(&self) -> Arc<dyn TextEmbedder> {
+        self.embedder.clone()
+    }
+
+    /// Wrap this backend in a [`CachingMemoryBackend`](crate::CachingMemoryBackend) keyed by its
+    /// own embedder, so similar queries are served from `cache` without re-running search.
+    pub fn into_cached(
+        self,
+        cache: crate::SemanticCache,
+    ) -> crate::CachingMemoryBackend<Self, crate::EmbedderVectorizer> {
+        let vectorizer = crate::EmbedderVectorizer::new(self.embedder());
+        crate::CachingMemoryBackend::new(self, vectorizer, cache)
+    }
+
     async fn ensure_ready(&self) -> MemoryResult<()> {
         self.store
             .ensure_collection(VectorCollection {

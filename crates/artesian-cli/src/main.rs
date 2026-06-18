@@ -981,6 +981,7 @@ async fn init(options: InitOptions, _non_interactive: bool) -> Result<()> {
             multi_query_enabled: false,
             debate_enabled: false,
             llm_consolidation_enabled: false,
+            semantic_cache: Default::default(),
         },
         agents,
         coordination: Default::default(),
@@ -1680,6 +1681,7 @@ async fn preflight_qdrant_options(options: &InitOptions) -> Result<()> {
         multi_query_enabled: false,
         debate_enabled: false,
         llm_consolidation_enabled: false,
+        semantic_cache: Default::default(),
     };
     preflight_qdrant_memory(&memory).await
 }
@@ -1720,6 +1722,7 @@ fn memory_config_for_command(
             multi_query_enabled: false,
             debate_enabled: false,
             llm_consolidation_enabled: false,
+            semantic_cache: Default::default(),
         }
     };
     let config = if let Some(backend) = backend {

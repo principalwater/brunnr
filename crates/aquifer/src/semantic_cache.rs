@@ -25,6 +25,28 @@ pub trait QueryVectorizer: Send + Sync {
     fn vectorize(&self, text: &str) -> Vec<f32>;
 }
 
+/// Adapts a [`TextEmbedder`](crate::TextEmbedder) into a [`QueryVectorizer`], so a vector
+/// backend's own embedder can key the cache (same embedding space, no second model load). An
+/// embedding error yields an empty vector, which simply misses the cache.
+#[cfg(feature = "vector")]
+pub struct EmbedderVectorizer {
+    embedder: std::sync::Arc<dyn crate::TextEmbedder>,
+}
+
+#[cfg(feature = "vector")]
+impl EmbedderVectorizer {
+    pub fn new(embedder: std::sync::Arc<dyn crate::TextEmbedder>) -> Self {
+        Self { embedder }
+    }
+}
+
+#[cfg(feature = "vector")]
+impl QueryVectorizer for EmbedderVectorizer {
+    fn vectorize(&self, text: &str) -> Vec<f32> {
+        self.embedder.embed_query(text).unwrap_or_default()
+    }
+}
+
 struct CacheEntry {
     embedding: Vec<f32>,
     limit: usize,
@@ -346,6 +368,22 @@ mod tests {
             2,
             "store invalidated the cache"
         );
+    }
+
+    #[cfg(feature = "vector")]
+    #[test]
+    fn embedder_vectorizer_delegates_to_text_embedder() {
+        struct MockEmbedder;
+        impl crate::TextEmbedder for MockEmbedder {
+            fn embed_query(&self, text: &str) -> MemoryResult<Vec<f32>> {
+                Ok(vec![text.len() as f32, 1.0])
+            }
+            fn embed_passage(&self, text: &str) -> MemoryResult<Vec<f32>> {
+                self.embed_query(text)
+            }
+        }
+        let vectorizer = EmbedderVectorizer::new(Arc::new(MockEmbedder));
+        assert_eq!(vectorizer.vectorize("abc"), vec![3.0, 1.0]);
     }
 
     #[tokio::test]

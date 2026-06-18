@@ -23,7 +23,7 @@ pub enum MemoryBackendKind {
     TencentDb,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct MemoryConfig {
     pub backend: MemoryBackendKind,
     pub root: String,
@@ -45,6 +45,37 @@ pub struct MemoryConfig {
     pub debate_enabled: bool,
     #[serde(default)]
     pub llm_consolidation_enabled: bool,
+    /// Semantic query cache over a vector backend (no effect on the files backend).
+    #[serde(default)]
+    pub semantic_cache: SemanticCacheConfig,
+}
+
+/// Settings for the semantic query cache (see `aquifer::SemanticCache`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SemanticCacheConfig {
+    /// Enable caching of vector-backend `find` results by query-embedding similarity.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Maximum cached queries (LRU eviction).
+    #[serde(default = "default_cache_capacity")]
+    pub capacity: usize,
+    /// Cosine threshold above which a prior query counts as a cache hit.
+    #[serde(default = "default_cache_min_similarity")]
+    pub min_similarity: f32,
+    /// Optional time-to-live for cache entries, in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl_seconds: Option<u64>,
+}
+
+impl Default for SemanticCacheConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            capacity: default_cache_capacity(),
+            min_similarity: default_cache_min_similarity(),
+            ttl_seconds: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -198,6 +229,7 @@ impl ArtesianConfig {
                 multi_query_enabled: false,
                 debate_enabled: false,
                 llm_consolidation_enabled: false,
+                semantic_cache: SemanticCacheConfig::default(),
             },
             agents,
             coordination: CoordinationConfig::default(),
@@ -240,4 +272,12 @@ fn default_acc_redundancy_threshold() -> f32 {
 
 fn default_acc_compress_on_saturation() -> bool {
     true
+}
+
+fn default_cache_capacity() -> usize {
+    256
+}
+
+fn default_cache_min_similarity() -> f32 {
+    0.95
 }

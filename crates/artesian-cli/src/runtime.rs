@@ -120,13 +120,38 @@ pub fn open_memory_backend(config: &MemoryConfig) -> Result<Arc<dyn MemoryBacken
             let store = SqliteVecVectorStore::open(SqliteVecVectorStoreConfig::new(sqlite_path(
                 &config.root,
             )))?;
-            Ok(Arc::new(VectorMemoryBackend::new(
-                store,
-                VectorMemoryConfig::new(&config.collection),
-            )?))
+            let backend =
+                VectorMemoryBackend::new(store, VectorMemoryConfig::new(&config.collection))?;
+            Ok(finish_vector_backend(backend, config))
         }
         MemoryBackendKind::Qdrant => open_qdrant_backend(config),
         MemoryBackendKind::TencentDb => bail!("TencentDB backend is not available yet"),
+    }
+}
+
+/// Build a semantic cache from config, or `None` when disabled.
+fn semantic_cache_from_config(config: &MemoryConfig) -> Option<aquifer::SemanticCache> {
+    if !config.semantic_cache.enabled {
+        return None;
+    }
+    let mut cache = aquifer::SemanticCache::new(
+        config.semantic_cache.capacity,
+        config.semantic_cache.min_similarity,
+    );
+    if let Some(ttl) = config.semantic_cache.ttl_seconds {
+        cache = cache.with_ttl(Duration::from_secs(ttl));
+    }
+    Some(cache)
+}
+
+/// Box a vector backend, wrapping it in a semantic cache when one is configured.
+fn finish_vector_backend<V: aquifer::VectorStore + Send + Sync + 'static>(
+    backend: VectorMemoryBackend<V>,
+    config: &MemoryConfig,
+) -> Arc<dyn MemoryBackend> {
+    match semantic_cache_from_config(config) {
+        Some(cache) => Arc::new(backend.into_cached(cache)),
+        None => Arc::new(backend),
     }
 }
 
@@ -228,10 +253,8 @@ fn open_qdrant_backend(config: &MemoryConfig) -> Result<Arc<dyn MemoryBackend>> 
         vector_config.api_key = env::var(env_name).ok();
     }
     let store = QdrantVectorStore::connect(vector_config)?;
-    Ok(Arc::new(VectorMemoryBackend::new(
-        store,
-        VectorMemoryConfig::new(&config.collection),
-    )?))
+    let backend = VectorMemoryBackend::new(store, VectorMemoryConfig::new(&config.collection))?;
+    Ok(finish_vector_backend(backend, config))
 }
 
 #[cfg(not(feature = "qdrant"))]

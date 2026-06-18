@@ -29,7 +29,19 @@ from cache instead of re-running search — cutting embedding + ANN work in agen
 around the same task. The cache is bounded (LRU) with an optional TTL; only plain text queries are
 cached (a `node_id` or tenancy filter bypasses it), and every `store` clears the cache so a new
 write is never hidden by a stale read. `SemanticCache` is embedder-agnostic via the
-`QueryVectorizer` seam; under feature `vector` the pinned `TextEmbedder` is adapted to it.
+`QueryVectorizer` seam; under feature `vector` the pinned `TextEmbedder` is adapted to it via
+`EmbedderVectorizer`, and `VectorMemoryBackend::into_cached` wraps a backend reusing its own
+embedder. Enable it in `artesian.toml` (vector backends only):
+
+```toml
+[memory.semantic_cache]
+enabled = true
+capacity = 256          # max cached queries (LRU)
+min_similarity = 0.95   # cosine threshold for a hit
+ttl_seconds = 300       # optional entry expiry
+```
+
+The CLI and MCP wrap the opened vector backend automatically when this block is enabled.
 
 ## Hybrid And RRF
 
