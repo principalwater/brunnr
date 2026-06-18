@@ -61,12 +61,31 @@ cargo build -p gauge --features llm --bin gauge-eval
 
 ## Results
 
-| dataset | system | judge | accuracy | tokens/query | source |
-|---|---|---|---|---|---|
-| LoCoMo | Artesian | gpt-5.5 (xhigh) | _run it_ | _run it_ | this harness |
-| LoCoMo | mem0 | (paper) | _from paper_ | _from paper_ | arXiv:2504.19413 |
-| LongMemEval | Artesian | gpt-5.5 (xhigh) | _run it_ | _run it_ | this harness |
-| LongMemEval | mem0 | (paper) | _from paper_ | _from paper_ | (mem0 materials) |
+Artesian numbers below are a **20-question sample per dataset**, judge = `codex` gpt-5.5
+(reasoning `xhigh`), **lexical recall** (the deterministic default), LongMemEval on the
+**oracle** split. The mem0 column must be filled from its paper under a matched protocol.
+
+| dataset | system | judge | accuracy | tokens/query | footprint vs full | source |
+|---|---|---|---|---|---|---|
+| LoCoMo | Artesian | gpt-5.5 xhigh | 0.15 (3/20) | 654 | 0.046 | this harness |
+| LoCoMo | mem0 | (paper) | _from paper_ | _from paper_ | _from paper_ | arXiv:2504.19413 |
+| LongMemEval (oracle) | Artesian | gpt-5.5 xhigh | 0.50 (10/20) | 2064 | 0.279 | this harness |
+| LongMemEval | mem0 | (paper) | _from paper_ | _from paper_ | _from paper_ | (mem0 materials) |
+
+**Reading these honestly:**
+
+- **Token efficiency is the headline win.** The committed context fed to the answerer is
+  **4.6 %** of the full LoCoMo conversation (654 vs ~14.3 k tokens) and **28 %** of the
+  LongMemEval-oracle history — the bounded-footprint property a memory *controller* is for, and
+  the axis directly comparable to mem0's "vs full-context" savings.
+- **Accuracy here is a floor, not Artesian's ceiling.** This run uses **lexical (term-overlap)
+  recall** — the dependency-free default — which misses paraphrased evidence, so the right facts
+  often never reach the committed context. The production retrieval path (vector + hybrid RRF +
+  reranking, plus the semantic cache) is expected to lift this substantially; a vector-backend
+  run is the next measurement. LongMemEval (0.50) beats LoCoMo (0.15) largely because the oracle
+  split already narrows the haystack to evidence sessions.
+- **Caveats:** n = 20 (noisy); strict LLM-as-judge; LoCoMo answers are often exact dates/values.
+  Do not read these as a tuned, full-dataset result.
 
 ### Pipeline smoke (not a benchmark result)
 
