@@ -22,7 +22,7 @@ mod runner {
     use std::sync::Arc;
 
     use headgate::{
-        count_tokens, Headgate, HeadgateConfig, LlmClient, LlmRequest, RecallItem,
+        count_tokens, Headgate, HeadgateConfig, LlmClient, LlmRequest, RecallItem, RecallStore,
         StaticRecallStore,
     };
     use serde::{Deserialize, Serialize};
@@ -110,14 +110,14 @@ Question: {question}\nGold: {gold}\nPredicted: {predicted}\nCorrect (yes/no):"
         reply.trim().to_lowercase().starts_with("yes")
     }
 
-    /// Run one QA case: recall → ACC cycle → answer → grade.
+    /// Run one QA case against a pre-built recall store: ACC cycle → answer → grade.
     pub async fn run_case(
         case: &QaCase,
+        recall: Arc<dyn RecallStore>,
         client: &dyn LlmClient,
         config: HeadgateConfig,
     ) -> headgate::HeadgateResult<CaseOutcome> {
         let raw_recall_tokens = case.facts.iter().map(|fact| count_tokens(fact)).sum();
-        let recall = Arc::new(StaticRecallStore::new(recall_items(case)));
         let mut headgate = Headgate::new(recall, config);
         headgate.cycle(&case.question).await?;
         let committed = headgate.render();
@@ -144,11 +144,12 @@ Question: {question}\nGold: {gold}\nPredicted: {predicted}\nCorrect (yes/no):"
         })
     }
 
-    /// Run a full dataset and aggregate. Cases that error (LLM unreachable) are skipped and
-    /// excluded from accuracy, but counted in `cases`.
+    /// Run a full dataset and aggregate. Cases that error (recall build or LLM unreachable) are
+    /// skipped and excluded from accuracy, but counted in `cases`.
     pub async fn run_qa_eval(
         dataset: impl Into<String>,
         cases: &[QaCase],
+        recall_factory: &dyn RecallFactory,
         client: &dyn LlmClient,
         config: HeadgateConfig,
     ) -> (EvalSummary, Vec<CaseOutcome>) {
@@ -157,7 +158,10 @@ Question: {question}\nGold: {gold}\nPredicted: {predicted}\nCorrect (yes/no):"
         let mut committed_total = 0usize;
         let mut raw_total = 0usize;
         for case in cases {
-            match run_case(case, client, config.clone()).await {
+            let Ok(recall) = recall_factory.build(case).await else {
+                continue;
+            };
+            match run_case(case, recall, client, config.clone()).await {
                 Ok(outcome) => {
                     if outcome.correct {
                         correct += 1;
@@ -199,6 +203,91 @@ Question: {question}\nGold: {gold}\nPredicted: {predicted}\nCorrect (yes/no):"
         }
     }
 
+    /// Builds the recall store for a case — the seam that swaps retrieval strategy.
+    pub trait RecallFactory: Send + Sync {
+        fn build<'a>(
+            &'a self,
+            case: &'a QaCase,
+        ) -> futures_util::future::BoxFuture<'a, headgate::HeadgateResult<Arc<dyn RecallStore>>>;
+    }
+
+    /// Deterministic lexical (term-overlap) recall — no embedder, dependency-free.
+    pub struct LexicalRecall;
+
+    impl RecallFactory for LexicalRecall {
+        fn build<'a>(
+            &'a self,
+            case: &'a QaCase,
+        ) -> futures_util::future::BoxFuture<'a, headgate::HeadgateResult<Arc<dyn RecallStore>>>
+        {
+            use futures_util::FutureExt;
+            let store: Arc<dyn RecallStore> = Arc::new(StaticRecallStore::new(recall_items(case)));
+            async move { Ok(store) }.boxed()
+        }
+    }
+
+    /// Vector recall: embeds each case's facts into a fresh sqlite-vec collection and recalls
+    /// with the real `VectorMemoryBackend` retrieval (embedding + small-to-big + RRF). The
+    /// embedder is loaded once and shared across cases.
+    #[cfg(feature = "vector")]
+    pub struct VectorRecall {
+        embedder: Arc<dyn aquifer::TextEmbedder>,
+    }
+
+    #[cfg(feature = "vector")]
+    impl VectorRecall {
+        pub fn new() -> headgate::HeadgateResult<Self> {
+            let embedder = aquifer::FastembedTextEmbedder::new()
+                .map_err(|error| headgate::HeadgateError::Recall(error.to_string()))?;
+            Ok(Self {
+                embedder: Arc::new(embedder),
+            })
+        }
+    }
+
+    #[cfg(feature = "vector")]
+    impl RecallFactory for VectorRecall {
+        fn build<'a>(
+            &'a self,
+            case: &'a QaCase,
+        ) -> futures_util::future::BoxFuture<'a, headgate::HeadgateResult<Arc<dyn RecallStore>>>
+        {
+            use aquifer::MemoryBackend;
+            use futures_util::FutureExt;
+            use headgate::{HeadgateError, MemoryRecallStore};
+
+            let embedder = self.embedder.clone();
+            let facts = case.facts.clone();
+            async move {
+                let dir = std::env::temp_dir().join(format!(
+                    "gauge-eval-{}-{}",
+                    std::process::id(),
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_nanos())
+                        .unwrap_or(0)
+                ));
+                std::fs::create_dir_all(&dir)
+                    .map_err(|error| HeadgateError::Recall(error.to_string()))?;
+                let store = aquifer::SqliteVecVectorStore::open(
+                    aquifer::SqliteVecVectorStoreConfig::new(dir.join("eval.sqlite3")),
+                )?;
+                let backend = aquifer::VectorMemoryBackend::with_embedder(
+                    store,
+                    aquifer::VectorMemoryConfig::new("eval"),
+                    embedder,
+                )?;
+                for fact in &facts {
+                    backend
+                        .store(aquifer::StoreMemory::atom(fact.clone()))
+                        .await?;
+                }
+                Ok(Arc::new(MemoryRecallStore::new(backend)) as Arc<dyn RecallStore>)
+            }
+            .boxed()
+        }
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -233,9 +322,15 @@ Question: {question}\nGold: {gold}\nPredicted: {predicted}\nCorrect (yes/no):"
             }
         }
 
+        async fn lexical_store(case: &QaCase) -> Arc<dyn RecallStore> {
+            LexicalRecall.build(case).await.expect("recall builds")
+        }
+
         #[tokio::test]
         async fn run_case_answers_and_grades() {
-            let outcome = run_case(&case(), &PerfectClient, HeadgateConfig::default())
+            let case = case();
+            let recall = lexical_store(&case).await;
+            let outcome = run_case(&case, recall, &PerfectClient, HeadgateConfig::default())
                 .await
                 .expect("case runs");
             assert!(outcome.correct);
@@ -248,8 +343,14 @@ Question: {question}\nGold: {gold}\nPredicted: {predicted}\nCorrect (yes/no):"
         #[tokio::test]
         async fn run_qa_eval_aggregates() {
             let cases = vec![case(), case()];
-            let (summary, outcomes) =
-                run_qa_eval("demo", &cases, &PerfectClient, HeadgateConfig::default()).await;
+            let (summary, outcomes) = run_qa_eval(
+                "demo",
+                &cases,
+                &LexicalRecall,
+                &PerfectClient,
+                HeadgateConfig::default(),
+            )
+            .await;
             assert_eq!(summary.cases, 2);
             assert_eq!(summary.graded, 2);
             assert_eq!(summary.correct, 2);
@@ -260,8 +361,10 @@ Question: {question}\nGold: {gold}\nPredicted: {predicted}\nCorrect (yes/no):"
     }
 }
 
+#[cfg(all(feature = "llm", feature = "vector"))]
+pub use runner::VectorRecall;
 #[cfg(feature = "llm")]
-pub use runner::{run_case, run_qa_eval, CaseOutcome, EvalSummary};
+pub use runner::{run_case, run_qa_eval, CaseOutcome, EvalSummary, LexicalRecall, RecallFactory};
 
 use serde::{Deserialize, Serialize};
 

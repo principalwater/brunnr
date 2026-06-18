@@ -10,9 +10,11 @@ pub use bench::{
     demo_case, render_markdown, run_bench, run_default_arm, BenchCase, BenchResult, FactLabel,
     LabeledFact,
 };
+#[cfg(all(feature = "llm", feature = "vector"))]
+pub use eval::VectorRecall;
 pub use eval::{load_locomo, load_longmemeval, LoadReport, QaCase};
 #[cfg(feature = "llm")]
-pub use eval::{run_case, run_qa_eval, CaseOutcome, EvalSummary};
+pub use eval::{run_case, run_qa_eval, CaseOutcome, EvalSummary, LexicalRecall, RecallFactory};
 
 use serde::{Deserialize, Serialize};
 

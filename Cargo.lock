@@ -1093,6 +1093,7 @@ dependencies = [
 name = "gauge"
 version = "0.1.0"
 dependencies = [
+ "aquifer",
  "futures-util",
  "headgate",
  "serde",

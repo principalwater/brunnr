@@ -9,10 +9,14 @@ license.workspace = true
 
 [features]
 default = []
-llm = ["headgate/llm"]
+llm = ["headgate/llm", "dep:futures-util"]
+# Vector recall for the QA eval (real VectorMemoryBackend + fastembed via aquifer).
+vector = ["dep:aquifer", "dep:futures-util"]
 
 [dependencies]
 headgate = { path = "../headgate" }
+aquifer = { path = "../aquifer", optional = true }
+futures-util = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
