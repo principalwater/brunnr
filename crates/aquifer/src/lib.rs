@@ -22,6 +22,7 @@ mod semantic_cache;
 #[cfg(feature = "sqlite-vec")]
 mod sqlite_vec;
 pub mod temporal;
+pub mod txn;
 mod types;
 mod upgrade;
 #[cfg(feature = "vector")]
@@ -59,6 +60,7 @@ pub use semantic_cache::{cosine_similarity, CachingMemoryBackend, QueryVectorize
 #[cfg(feature = "sqlite-vec")]
 pub use sqlite_vec::{SqliteVecBackend, SqliteVecVectorStore, SqliteVecVectorStoreConfig};
 pub use temporal::{apply_knowledge_supersession, apply_recency_decay};
+pub use txn::{sync_okf_directory, CommitLog, SyncReport, TransactionalMemory, TxnError, TxnSeq};
 pub use types::{
     MemoryError, MemoryId, MemoryQuery, MemoryRecord, MemoryResult, MemoryScope, MemoryTier,
     RrfOptions, SearchHit, SearchSource, StoreMemory,

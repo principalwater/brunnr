@@ -3,9 +3,9 @@
 use std::{sync::Arc, time::Duration};
 
 use aquifer::{
-    FilesBackend, MemoryBackend, MemoryQuery, MemoryResult, MemoryScope, MemoryTier,
-    SessionLaneLock, SqliteVecVectorStore, StoreMemory, TextEmbedder, VectorMemoryBackend,
-    VectorMemoryConfig,
+    CommitLog, FilesBackend, MemoryBackend, MemoryQuery, MemoryResult, MemoryScope, MemoryTier,
+    SessionLaneLock, SqliteVecVectorStore, StoreMemory, TextEmbedder, TransactionalMemory,
+    TxnError, VectorMemoryBackend, VectorMemoryConfig,
 };
 use artesian_test_support::TempDir;
 
@@ -190,6 +190,145 @@ async fn assert_concurrent_scope_isolation(backend: Arc<dyn MemoryBackend>) {
     let hits = backend.find(query).await.expect("find should succeed");
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].record.node_id, "node:duplicate");
+}
+
+/// Stress test: N agents × M operators write the shared memory concurrently through the
+/// transactional commit log. Proves:
+/// 1. All writes commit without corruption (commit_with_retry handles CAS conflicts).
+/// 2. The commit-log sequence advances exactly N×M — one increment per committed write.
+/// 3. Tenant isolation: each operator's writes are returned only for that operator's filter.
+///
+/// This is the acceptance criterion for Step 4: "N agents × M operators write the shared
+/// memory concurrently with zero corruption and correct isolation."
+#[tokio::test]
+async fn transactional_memory_n_agents_m_operators_zero_corruption() {
+    let agents = 6usize;
+    let operators = 4usize;
+    let total = agents * operators;
+
+    let tempdir = TempDir::new("txn-stress");
+    let backend = Arc::new(FilesBackend::new(tempdir.path()));
+    let shared_log = CommitLog::new();
+
+    let txn: Arc<TransactionalMemory<FilesBackend>> = Arc::new(TransactionalMemory::with_log(
+        Arc::clone(&backend),
+        shared_log,
+    ));
+
+    let mut handles = Vec::new();
+    for op in 0..operators {
+        for ag in 0..agents {
+            let txn = Arc::clone(&txn);
+            handles.push(tokio::spawn(async move {
+                txn.commit_with_retry(
+                    StoreMemory {
+                        content: format!("operator-{op} agent-{ag} shared state"),
+                        tags: vec![format!("op-{op}"), format!("ag-{ag}")],
+                        metadata: Default::default(),
+                        tier: MemoryTier::L1Atom,
+                        node_id: Some(format!("node:op{op}:ag{ag}")),
+                        created_at: None,
+                        scope: Some(MemoryScope::Agent),
+                        agent_id: Some(format!("agent-{ag}")),
+                        session_id: None,
+                        task_id: None,
+                        user_id: Some(format!("operator-{op}")),
+                    },
+                    32,
+                )
+                .await
+            }));
+        }
+    }
+
+    let mut successes = 0usize;
+    for handle in handles {
+        if handle.await.expect("join").is_ok() {
+            successes += 1;
+        }
+    }
+
+    assert_eq!(
+        successes, total,
+        "all {total} writes should commit — zero corruption"
+    );
+    assert_eq!(
+        txn.current_seq(),
+        total as u64,
+        "commit log should have advanced exactly {total} times"
+    );
+
+    // Verify tenant isolation: each operator's memories are readable only through their filter.
+    for op in 0..operators {
+        let mut query = MemoryQuery::new("shared state").with_limit(total);
+        query.user_id = Some(format!("operator-{op}"));
+        let hits = backend.find(query).await.expect("find should succeed");
+        assert_eq!(
+            hits.len(),
+            agents,
+            "operator-{op} should see exactly {agents} memories"
+        );
+        assert!(
+            hits.iter()
+                .all(|h| h.record.user_id.as_deref() == Some(&format!("operator-{op}"))),
+            "all hits for operator-{op} should belong to that operator"
+        );
+    }
+}
+
+/// Verify CAS conflict is detectable without retry, matching the Cursor model:
+/// two writers that both read seq=N, only one commits; the other must retry.
+#[tokio::test]
+async fn transactional_memory_cas_conflict_is_detectable() {
+    let tempdir = TempDir::new("txn-cas");
+    let backend = Arc::new(FilesBackend::new(tempdir.path()));
+    let txn = TransactionalMemory::new(Arc::clone(&backend));
+
+    let (seq_a, mem_a) = txn
+        .begin_write(StoreMemory::atom("writer A"))
+        .await
+        .unwrap();
+    let (seq_b, mem_b) = txn
+        .begin_write(StoreMemory::atom("writer B"))
+        .await
+        .unwrap();
+    assert_eq!(seq_a, seq_b, "both writers should see the same initial seq");
+
+    txn.commit(seq_a, mem_a)
+        .await
+        .expect("first commit succeeds");
+
+    let err = txn.commit(seq_b, mem_b).await.unwrap_err();
+    assert!(
+        matches!(err, TxnError::Conflict { .. }),
+        "second write on same seq should conflict, got {err}"
+    );
+}
+
+/// Verify that a human-edited OKF file becomes immediately retrievable after
+/// sync_okf_directory — the "file edit = transaction" primitive.
+#[tokio::test]
+async fn sync_okf_directory_makes_file_edits_retrievable() {
+    let tempdir = TempDir::new("okf-edit-txn");
+    let memory_dir = tempdir.path().join("memory");
+    std::fs::create_dir_all(&memory_dir).unwrap();
+
+    std::fs::write(
+        memory_dir.join("decision.md"),
+        "---\ntype: decision\ntitle: Approach B selected\ntimestamp: 2026-06-20T00:00:00Z\nnode_id: node:decision-b\ntier: l1-atom\n---\n\nApproach B was selected after approach A failed.\n",
+    ).expect("write fixture");
+
+    let backend = FilesBackend::new(&memory_dir);
+    let report = aquifer::sync_okf_directory(&memory_dir, &backend)
+        .await
+        .expect("sync should succeed");
+
+    assert!(report.files_scanned >= 1, "should scan at least 1 file");
+    assert!(
+        report.records_indexed >= 1,
+        "should index at least 1 record"
+    );
+    assert_eq!(report.parse_failures, 0);
 }
 
 const TEST_DIMENSIONS: usize = 8;

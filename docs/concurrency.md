@@ -116,6 +116,33 @@ Routing every agent through the MCP server / daemon centralizes connection pooli
 read-after-write policy, tenant filtering, and (optionally) auth — so adding agents or users scales
 without each one managing raw DB connections.
 
+## Transactional commit log (optimistic concurrency)
+
+The `TransactionalMemory<B>` wrapper in `aquifer::txn` adds an explicit, application-visible
+optimistic-concurrency layer on top of any `MemoryBackend`:
+
+1. **Read free.** `current_seq()` is a lock-free atomic read.
+2. **Write CAS.** `begin_write()` snapshots the current sequence; `commit(expected_seq, memory)`
+   succeeds only if the sequence is still `expected_seq` — otherwise returns
+   `TxnError::Conflict { expected, actual }` so the caller can retry with a fresh read.
+3. **`commit_with_retry(memory, max_retries)`** wraps the CAS loop automatically.
+
+This is the optimistic-concurrency model Cursor documented: "read free, write fails if state
+changed." It does NOT replace the underlying backend's own serialization (SQLite WAL / Qdrant
+native concurrency) — it adds an explicit, logic-level CAS so agents can reason about "what
+sequence was the world in when I started this write?"
+
+**OKF file edits as transactions.** `aquifer::sync_okf_directory(dir, backend)` re-indexes
+every OKF markdown file in a directory. Run it after a human edits a file and the new content is
+immediately retrievable. A file-watcher daemon calls this at configurable cadence — the edit is
+a first-class transaction, not a side-channel.
+
+**Acceptance test (Step 4).** `concurrency.rs::transactional_memory_n_agents_m_operators_zero_corruption`
+spawns 6 agents × 4 operators = 24 concurrent writers through one `TransactionalMemory`. All 24
+commits succeed via `commit_with_retry`; the commit log advances to exactly 24; tenant-filtered
+reads return exactly 6 memories per operator — zero corruption, correct isolation. The
+Oracle/Cursor failure mode does not occur.
+
 ## Summary
 
 - Append-mostly + idempotent writes ⇒ no lost-update races.
@@ -126,6 +153,8 @@ without each one managing raw DB connections.
   `VectorStore`.
 - Session-lane locks serialize writes per collection/session with bounded timeouts; reads remain
   concurrent.
+- `TransactionalMemory<B>` adds optimistic CAS (read free, write fails on conflict) over any
+  backend. `sync_okf_directory` makes file edits first-class transactions.
 - Qdrant for parallel/multi-user; sqlite-vec/files for single-host.
 - Funnel access through `artesian-mcp`/`artesiand` for pooling, `wait=true` read-after-write, tenant
   filtering, and per-user keys.

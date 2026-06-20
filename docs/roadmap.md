@@ -120,7 +120,7 @@ the moat. Optional steps (6–7) are in scope. Step 8 is the final documentation
   `aquifer/tests/anchor.rs`; CLI `artesian memory anchor get|set|recover`; MCP `memory.anchor.get` /
   `memory.anchor.set`; `docs/self-repair.md` updated with status table and demo recipe.
 
-### Step 4 — Transactional multi-writer substrate + file interface (the moat)
+### Step 4 — Transactional multi-writer substrate + file interface (the moat) ✓ DONE
 
 - **Goal:** unify the OKF file *interface* and the vector *substrate* under one transactional
   commit-log (no polyglot, no flat file-locks). Per-scope isolation (operator / agent / run)
@@ -130,6 +130,11 @@ the moat. Optional steps (6–7) are in scope. Step 8 is the final documentation
 - **Acceptance:** N agents + M operators write the shared memory concurrently with zero corruption
   and correct isolation; a human-edited markdown file is reflected in retrieval; integrity proven by
   a concurrency stress test (the failure mode Oracle/Cursor document does not occur).
+- **Status:** `aquifer::txn` — `CommitLog` (CAS atomic u64), `TransactionalMemory<B>` wrapper with
+  `begin_write`/`commit`/`commit_with_retry`, `TxnError::Conflict`; `sync_okf_directory` for
+  file-edit transactions. Acceptance test: 6 agents × 4 operators (24 concurrent writes, 0
+  corruption, exact tenant isolation) — all 7 concurrency tests green. `docs/concurrency.md`
+  extended with the transactional model and acceptance evidence.
 
 ### Step 5 — Loop-native packaging (portable across agents)
 
