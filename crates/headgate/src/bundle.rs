@@ -390,6 +390,186 @@ impl WorkingContextBundle {
     }
 }
 
+// ---- OCF (Open Cognitive Format) ---------------------------------------------------------------
+//
+// OCF (github.com/aquifer-labs/ocf) is a sibling on-disk layout of the same committed working
+// state, split into four files — manifest / schema / snapshot / qualify — so the schema is a
+// checkable contract and the qualify log carries admit/reject decisions. Artesian is the reference
+// implementation.
+
+const OCF_VERSION: &str = "0.1";
+const OCF_MANIFEST_FILE: &str = "manifest.json";
+const OCF_SCHEMA_FILE: &str = "schema.json";
+const OCF_SNAPSHOT_FILE: &str = "snapshot.json";
+const OCF_QUALIFY_FILE: &str = "qualify.jsonl";
+
+#[derive(Serialize, Deserialize)]
+struct OcfManifest {
+    ocf_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    agent_id: Option<String>,
+    created: DateTime<Utc>,
+    unit_source: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    unit_refs: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct OcfSlot {
+    name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct OcfSchemaFile {
+    ocf_version: String,
+    slots: Vec<OcfSlot>,
+    budget_tokens: usize,
+    eviction: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct OcfSnapshotFile {
+    budget_tokens: usize,
+    token_count: usize,
+    saturation: f32,
+    entries: Vec<SnapshotEntry>,
+}
+
+/// One line of `qualify.jsonl`: an admit/reject decision with its reason — the governance trail
+/// that travels with an OCF bundle.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QualifyRecord {
+    pub ts: DateTime<Utc>,
+    pub unit_ref: String,
+    pub admitted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot: Option<String>,
+    pub score: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+impl WorkingContextBundle {
+    /// Write the bundle in the Open Cognitive Format (OCF) four-file layout.
+    pub fn write_ocf_dir(&self, dir: &Path) -> Result<(), BundleError> {
+        std::fs::create_dir_all(dir)?;
+        let manifest = OcfManifest {
+            ocf_version: OCF_VERSION.to_string(),
+            agent_id: self.manifest.agent_id.clone(),
+            created: self.manifest.created_at,
+            unit_source: self.manifest.unit_source.clone(),
+            unit_refs: self.manifest.unit_ref.clone().into_iter().collect(),
+        };
+        let schema = OcfSchemaFile {
+            ocf_version: OCF_VERSION.to_string(),
+            slots: self
+                .snapshot
+                .schema
+                .iter()
+                .map(|name| OcfSlot {
+                    name: name.clone(),
+                    description: None,
+                })
+                .collect(),
+            budget_tokens: self.snapshot.budget_tokens,
+            eviction: "lowest-score".to_string(),
+        };
+        let saturation = if self.snapshot.budget_tokens > 0 {
+            self.snapshot.token_count as f32 / self.snapshot.budget_tokens as f32
+        } else {
+            0.0
+        };
+        let snapshot = OcfSnapshotFile {
+            budget_tokens: self.snapshot.budget_tokens,
+            token_count: self.snapshot.token_count,
+            saturation,
+            entries: self.snapshot.entries.clone(),
+        };
+        // Admit record per committed entry (carrying slot + score), plus any reject/deprecation
+        // events recorded in the lifecycle log.
+        let mut qualify: Vec<QualifyRecord> = self
+            .snapshot
+            .entries
+            .iter()
+            .map(|entry| QualifyRecord {
+                ts: entry.committed_at,
+                unit_ref: entry.id.clone(),
+                admitted: true,
+                slot: Some(entry.slot.clone()),
+                score: entry.score,
+                reason: Some("qualified".to_string()),
+            })
+            .collect();
+        for event in &self.lifecycle {
+            if matches!(event.decision, Decision::Evict | Decision::Deprecate) {
+                qualify.push(QualifyRecord {
+                    ts: event.ts,
+                    unit_ref: event.entry_id.clone(),
+                    admitted: false,
+                    slot: None,
+                    score: 0.0,
+                    reason: Some(format!("{:?}", event.decision).to_lowercase()),
+                });
+            }
+        }
+        std::fs::write(
+            dir.join(OCF_MANIFEST_FILE),
+            serde_json::to_string_pretty(&manifest)?,
+        )?;
+        std::fs::write(
+            dir.join(OCF_SCHEMA_FILE),
+            serde_json::to_string_pretty(&schema)?,
+        )?;
+        std::fs::write(
+            dir.join(OCF_SNAPSHOT_FILE),
+            serde_json::to_string_pretty(&snapshot)?,
+        )?;
+        let mut jsonl = String::new();
+        for record in &qualify {
+            jsonl.push_str(&serde_json::to_string(record)?);
+            jsonl.push('\n');
+        }
+        std::fs::write(dir.join(OCF_QUALIFY_FILE), jsonl)?;
+        Ok(())
+    }
+
+    /// Read an OCF four-file bundle back into a working-context bundle (the "resume" path).
+    pub fn read_ocf_dir(dir: &Path) -> Result<Self, BundleError> {
+        let manifest: OcfManifest =
+            serde_json::from_str(&std::fs::read_to_string(dir.join(OCF_MANIFEST_FILE))?)?;
+        if !version_compatible(&manifest.ocf_version) {
+            return Err(BundleError::Version(manifest.ocf_version));
+        }
+        let schema: OcfSchemaFile =
+            serde_json::from_str(&std::fs::read_to_string(dir.join(OCF_SCHEMA_FILE))?)?;
+        let snapshot: OcfSnapshotFile =
+            serde_json::from_str(&std::fs::read_to_string(dir.join(OCF_SNAPSHOT_FILE))?)?;
+        let working = WorkingContextSnapshot {
+            schema: schema.slots.into_iter().map(|slot| slot.name).collect(),
+            budget_tokens: snapshot.budget_tokens,
+            token_count: snapshot.token_count,
+            entries: snapshot.entries,
+        };
+        let bundle_manifest = BundleManifest {
+            format: BUNDLE_FORMAT.to_string(),
+            version: BUNDLE_VERSION.to_string(),
+            agent_id: manifest.agent_id,
+            created_at: manifest.created,
+            unit_source: manifest.unit_source,
+            unit_ref: manifest.unit_refs.into_iter().next(),
+        };
+        let bundle = Self {
+            manifest: bundle_manifest,
+            snapshot: working,
+            lifecycle: Vec::new(),
+        };
+        bundle.validate()?;
+        Ok(bundle)
+    }
+}
+
 /// Accept any bundle sharing this reader's major version.
 fn version_compatible(found: &str) -> bool {
     let major = |version: &str| version.split('.').next().unwrap_or_default().to_string();
@@ -522,5 +702,25 @@ mod tests {
         assert!(version_compatible("0.1"));
         assert!(version_compatible("0.9"));
         assert!(!version_compatible("1.0"));
+    }
+
+    #[test]
+    fn ocf_round_trips_through_a_directory() {
+        let bundle =
+            WorkingContextBundle::new(sample_snapshot(), vec![LifecycleEntry::commit("a")]);
+        let dir = temp_dir("ocf");
+        bundle.write_ocf_dir(&dir).expect("write ocf");
+        for file in [
+            "manifest.json",
+            "schema.json",
+            "snapshot.json",
+            "qualify.jsonl",
+        ] {
+            assert!(dir.join(file).exists(), "missing {file}");
+        }
+        let read = WorkingContextBundle::read_ocf_dir(&dir).expect("read ocf");
+        assert_eq!(read.snapshot, bundle.snapshot);
+        assert_eq!(read.manifest.unit_source, "inline");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

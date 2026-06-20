@@ -47,8 +47,8 @@ mod metrics;
 mod recall;
 
 pub use bundle::{
-    BundleError, BundleManifest, Decision, LifecycleEntry, LifecycleReason, Resolution,
-    SnapshotEntry, Status, WorkingContextBundle, WorkingContextSnapshot, BUNDLE_FORMAT,
+    BundleError, BundleManifest, Decision, LifecycleEntry, LifecycleReason, QualifyRecord,
+    Resolution, SnapshotEntry, Status, WorkingContextBundle, WorkingContextSnapshot, BUNDLE_FORMAT,
     BUNDLE_VERSION,
 };
 pub use ccs::{CcsSchema, CommittedContextState, CommittedEntry};

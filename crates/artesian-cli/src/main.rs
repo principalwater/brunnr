@@ -585,6 +585,8 @@ enum KitFormat {
     Markdown,
     /// A portable working-context bundle directory (manifest + snapshot + lifecycle log).
     Bundle,
+    /// An Open Cognitive Format (OCF) bundle directory (manifest + schema + snapshot + qualify).
+    Ocf,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -1580,10 +1582,33 @@ This kit works identically in Codex and Claude Code: the MCP tools (`memory.anch
                     wc_bundle.snapshot.token_count
                 );
             }
+            KitFormat::Ocf => {
+                let kit_dir = root.join("kit");
+                let anchor = AnchorAnchorStore::new(&root).get().await?;
+                let wc_bundle = build_kit_bundle(&kit_dir, anchor.as_ref())?;
+                wc_bundle
+                    .validate()
+                    .context("built an invalid working-context bundle")?;
+                let out = output.context("--output <dir> is required for --format ocf")?;
+                wc_bundle
+                    .write_ocf_dir(&out)
+                    .with_context(|| format!("write OCF bundle to {}", out.display()))?;
+                println!(
+                    "OCF bundle written to {} ({} entries, {} tokens)",
+                    out.display(),
+                    wc_bundle.snapshot.entries.len(),
+                    wc_bundle.snapshot.token_count
+                );
+            }
         },
         KitCommand::Import { input, root: _root } => {
-            let wc_bundle = WorkingContextBundle::read_dir(&input)
-                .with_context(|| format!("read/validate bundle at {}", input.display()))?;
+            let wc_bundle = if input.join("schema.json").exists() {
+                WorkingContextBundle::read_ocf_dir(&input)
+                    .with_context(|| format!("read/validate OCF bundle at {}", input.display()))?
+            } else {
+                WorkingContextBundle::read_dir(&input)
+                    .with_context(|| format!("read/validate bundle at {}", input.display()))?
+            };
             println!(
                 "=== bundle: {} v{} (units: {}) ===",
                 wc_bundle.manifest.format,
