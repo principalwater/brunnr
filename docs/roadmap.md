@@ -108,7 +108,7 @@ the moat. Optional steps (6–7) are in scope. Step 8 is the final documentation
   `benchmarks/comparison/README.md` extended with Part 2 agentic methodology + scale lane + honesty
   notes. 15/15 tests green with `--features llm`.
 
-### Step 3 — Self-repair (survive compaction *and* disconnect)
+### Step 3 — Self-repair (survive compaction *and* disconnect) ✓ DONE
 
 - **Goal:** detect a compaction / reconnect / session-restart boundary, then auto re-anchor
   (deterministic session anchor + targeted recall) *before* the next action. Make it a first-class,
@@ -116,6 +116,9 @@ the moat. Optional steps (6–7) are in scope. Step 8 is the final documentation
 - **Where:** `headgate` (anchor + replay), `artesian-cli`/`artesian-mcp` (hook), `docs/self-repair.md`.
 - **Acceptance:** a demo that interrupts a loop mid-task (e.g. "turn 47") and resumes with the plan,
   decisions, and next step intact — no human "re-read the md" step.
+- **Status:** `AnchorAnchorStore` + `recover_after_compaction` in aquifer; 2 passing tests in
+  `aquifer/tests/anchor.rs`; CLI `artesian memory anchor get|set|recover`; MCP `memory.anchor.get` /
+  `memory.anchor.set`; `docs/self-repair.md` updated with status table and demo recipe.
 
 ### Step 4 — Transactional multi-writer substrate + file interface (the moat)
 

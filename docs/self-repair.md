@@ -25,7 +25,25 @@ flowchart LR
   C -->|no| ACT
 ```
 
-Status: `AnchorAnchorStore` writes and reads the anchor in OKF `log.md`; MCP exposes
-`memory.anchor.get` / `memory.anchor.set`; the CLI exposes `artesian memory anchor get|set|recover`.
-The host-specific compaction detector remains an integration concern, but the replay primitive is
-implemented and tested.
+## Status: IMPLEMENTED
+
+| Component | Location | State |
+|---|---|---|
+| `AnchorAnchorStore` | `aquifer/src/anchor.rs` | Reads/writes anchor to OKF `log.md` |
+| `recover_after_compaction` | `aquifer/src/anchor.rs` | Re-reads anchor + targeted `memory.find` |
+| Anchor tests | `aquifer/tests/anchor.rs` | 2 passing integration tests |
+| MCP tools | `artesian-mcp/src/lib.rs` | `memory.anchor.get`, `memory.anchor.set` |
+| CLI commands | `artesian-cli/src/main.rs` | `artesian memory anchor get|set|recover` |
+
+The host-specific compaction detector remains an integration concern — Artesian cannot intercept
+the host's compaction signal, but the replay primitive (`recover_after_compaction`) is implemented
+and tested. The canonical integration pattern:
+
+```
+# At loop start (or after any suspected compaction):
+artesian memory anchor recover --limit 10
+# → prints the last anchor + top-10 memory hits, ready to inject into the next prompt
+```
+
+This is a first-class, demoable feature: interrupt a loop at "turn 47," run `recover`, resume
+with plan pointer, decisions, and next step intact — no human "re-read the markdown" step.
