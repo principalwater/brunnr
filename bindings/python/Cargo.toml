@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "artesian-py"
+version = "0.0.1"
+edition = "2021"
+license = "Apache-2.0"
+description = "Native Python bindings for Artesian (scaffold)."
+publish = false
+
+[lib]
+name = "_artesian"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.23", features = ["extension-module"] }
+
+# Detached from the parent cargo workspace on purpose: these bindings are built with maturin and
+# versioned independently. As the core stabilizes, add path deps on `headgate` / `aquifer` here.
+[workspace]

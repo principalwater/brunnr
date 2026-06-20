@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: Apache-2.0
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "artesian"
+version = "0.0.1"
+description = "Memory control plane for agent loops — native Python bindings over the Rust core."
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.9"
+keywords = ["agents", "memory", "llm", "rag", "mcp", "context"]
+classifiers = [
+  "Programming Language :: Rust",
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: Apache Software License",
+]
+
+[project.urls]
+Homepage = "https://github.com/aquifer-labs/artesian"
+Repository = "https://github.com/aquifer-labs/artesian"
+
+[tool.maturin]
+# The compiled module is `artesian._artesian`; pure-Python wrappers live in python/artesian.
+module-name = "artesian._artesian"
+python-source = "python"
+features = ["pyo3/extension-module"]

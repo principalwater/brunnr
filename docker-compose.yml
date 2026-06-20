@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: Apache-2.0
+# Run Artesian locally with Docker. Build + start the daemon:
+#   docker compose up --build
+# Add the optional Qdrant vector backend:
+#   docker compose --profile qdrant up --build
+# The image (see ./Dockerfile) builds the `artesian` / `artesiand` binaries.
+
+services:
+  artesian:
+    build: .
+    image: artesian:local
+    env_file: [.env]
+    environment:
+      ARTESIAN_HOME: /data
+    volumes:
+      - artesian-data:/data
+    # The default image entrypoint runs the CLI. Override to run the long-lived daemon or the
+    # MCP server for your setup, e.g.:
+    #   command: ["artesiand"]
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:v1.18.0
+    profiles: ["qdrant"]
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    environment:
+      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:-}
+    volumes:
+      - qdrant-data:/qdrant/storage
+    restart: unless-stopped
+
+volumes:
+  artesian-data:
+  qdrant-data:

@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: Apache-2.0
+# Docs site (starter). Install: pip install mkdocs-material. Run: mkdocs serve.
+# Nav is intentionally minimal and is finalized during the documentation sweep.
+site_name: Artesian
+site_description: Memory control plane for agent loops.
+repo_url: https://github.com/aquifer-labs/artesian
+repo_name: aquifer-labs/artesian
+docs_dir: docs
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - search.suggest
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: teal
+      toggle: { icon: material/weather-night, name: Switch to dark mode }
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: teal
+      toggle: { icon: material/weather-sunny, name: Switch to light mode }
+
+markdown_extensions:
+  - admonition
+  - tables
+  - pymdownx.superfences
+  - pymdownx.highlight
+  - toc:
+      permalink: true
+
+nav:
+  - Home: onboarding.md
+  - Why Artesian: positioning.md
+  - Roadmap: roadmap.md
+  - Architecture: architecture.md
+  - Composability (LEGO): composability.md
+  - Why Rust: why-rust.md
+  - Backends: backends.md
+  - Modes: modes.md
+  - Self-repair: self-repair.md
+  - Concurrency: concurrency.md

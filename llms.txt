@@ -1,0 +1,28 @@
+# Artesian
+
+> Memory control plane for agent loops. Artesian keeps an agent's working context small,
+> high-signal, and survivable across compaction and disconnects, so memory guides the next action —
+> not just recalls a fact — and is owned by you, portable across any model and any retrieval store.
+
+Artesian is a Rust workspace. It layers an ACC-style control plane (`headgate`) over a
+token-efficient retrieval store (`aquifer`), with optional orchestration, sandboxing, and
+evaluation. It is MCP-first, ships pluggable backends, and builds to one static binary.
+
+## Concepts
+- ACC / CCS: a bounded, schema-governed committed context state, updated through a qualify-gate.
+- Recall is not use: memory must guide the next action, not merely return a relevant fact.
+- Interface is not substrate: human-readable files as the interface over a transactional,
+  semantically-indexed store as the substrate.
+
+## Docs
+- [Why Artesian (positioning)](https://github.com/aquifer-labs/artesian/blob/main/docs/positioning.md): the problem, the three gaps, and the ACC wedge.
+- [Roadmap](https://github.com/aquifer-labs/artesian/blob/main/docs/roadmap.md): where the project is going and why.
+- [Architecture](https://github.com/aquifer-labs/artesian/blob/main/docs/architecture.md): the crates and the data flow.
+- [Composability (LEGO)](https://github.com/aquifer-labs/artesian/blob/main/docs/composability.md): use one brick or the whole set.
+- [Why Rust](https://github.com/aquifer-labs/artesian/blob/main/docs/why-rust.md): the concrete wins from a Rust core.
+- [Backends](https://github.com/aquifer-labs/artesian/blob/main/docs/backends.md): files, sqlite-vec, Qdrant, pgvector.
+- [Modes](https://github.com/aquifer-labs/artesian/blob/main/docs/modes.md): memory, orchestrate, full.
+- [Self-repair](https://github.com/aquifer-labs/artesian/blob/main/docs/self-repair.md): surviving compaction and disconnects.
+
+## Source
+- [Repository](https://github.com/aquifer-labs/artesian)
