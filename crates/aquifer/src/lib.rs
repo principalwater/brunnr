@@ -84,3 +84,9 @@ pub use vector_memory::{
 pub use working::{
     InMemoryWorkingMemory, WorkingMemory, WorkingMemoryMode, WorkingMemoryView, WorkingTurn,
 };
+
+pub mod consolidation;
+pub use consolidation::{
+    consolidation_pass, ConsolidationClaim, ConsolidationOptions, ConsolidationReport,
+    GovernanceFields,
+};

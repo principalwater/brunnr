@@ -68,6 +68,18 @@ accept/reject loop); `headgate` — the dedicated CCS controller with schema-sta
 drift/hallucination/footprint metrics — is the Step 4 build. No OSS system implements ACC fully
 today; Artesian is the first-mover.
 
+### Corrective-RAG and Graph-RAG
+
+**Corrective-RAG** proposes verifying retrieved context before use and discarding low-quality
+retrievals. Artesian's ACC qualify-gate already implements this: every recall candidate is scored for
+relevance, novelty, and drift before it enters the bounded committed state. Artesian is a
+deployed Corrective-RAG — not a future direction.
+
+**Graph-RAG** (relational memory via an entity-relation graph) is a complementary future direction.
+The CCS schema has a `relational_map` slot reserved for it, but a graph store is not yet wired.
+Graph-RAG is optional for agent loops that require structured relational queries; most loops do not
+need it and are better served by the bounded CCS approach.
+
 ### Why this matters beyond RAG
 
 | | Pure RAG | Artesian ACC |
