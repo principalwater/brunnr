@@ -95,7 +95,7 @@ async fn int8_collection_retrieves_top_candidate() {
 fn int8_blob_is_4x_smaller_than_float32() {
     let dims = 384usize;
     let float32_bytes = dims * 4; // f32 = 4 bytes/dim
-    let int8_bytes = dims * 1; // i8 = 1 byte/dim
+    let int8_bytes = dims; // i8 = 1 byte/dim
     assert_eq!(
         float32_bytes / int8_bytes,
         4,

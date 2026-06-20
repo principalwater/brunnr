@@ -172,9 +172,8 @@ pub fn consolidation_pass(
     }
 
     let mut claims = Vec::with_capacity(groups.len());
-    let mut version_counter: u32 = 1;
 
-    for group in &groups {
+    for (group_idx, group) in groups.iter().enumerate() {
         // Pick the most recent record as canonical source.
         let canonical_idx = group
             .iter()
@@ -188,10 +187,7 @@ pub fn consolidation_pass(
             .iter()
             .map(|&idx| records[idx].node_id.clone())
             .collect();
-        let scope = options
-            .scope_override
-            .clone()
-            .or_else(|| canonical.scope.clone());
+        let scope = options.scope_override.or(canonical.scope);
         let source_label = if source_ids.len() == 1 {
             source_ids[0].clone()
         } else {
@@ -204,14 +200,13 @@ pub fn consolidation_pass(
             answer: answer.clone(),
             governance: GovernanceFields {
                 scope,
-                version: version_counter,
+                version: (group_idx as u32) + 1,
                 source: format!("{}: {}", options.source_label, source_label),
             },
             source_ids,
             content,
             tags: canonical.tags.clone(),
         });
-        version_counter += 1;
     }
 
     let footprint_after: usize = claims.iter().map(|c| c.content.len() / 4 + 1).sum();
@@ -283,7 +278,6 @@ fn split_qa(content: &str) -> (String, String) {
 mod tests {
     use super::*;
     use crate::{MemoryId, MemoryRecord, MemoryTier};
-    use chrono::Utc;
     use std::collections::BTreeMap;
 
     fn make_record(id: &str, content: &str) -> MemoryRecord {
