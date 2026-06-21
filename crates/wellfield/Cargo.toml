@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 [package]
-name = "flotilla"
+name = "wellfield"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

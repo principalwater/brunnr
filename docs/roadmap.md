@@ -70,7 +70,7 @@ ergonomics + database guarantees + an ACC control plane — owned and self-hoste
 - `headgate` — ACC control plane: bounded CCS, qualify-gate, commit-loop, pluggable LLM judge +
   compressor. **First ACC implementation in OSS.**
 - `gauge` — eval harness (LoCoMo/LongMemEval, LLM-as-judge, footprint/accuracy/tokens).
-- `basin`/`flotilla`/`headrace`/`sandbox` — orchestration, teams, queue, Docker isolation.
+- `basin`/`wellfield`/`headrace`/`sandbox` — orchestration, teams, queue, Docker isolation.
 - `artesian-mcp`/`artesian-cli` — MCP-first + CLI.
 
 **Two gaps to close:** (a) the public framing still reads "memory store," not "control plane for

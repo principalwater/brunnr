@@ -20,7 +20,7 @@ The naming family draws from hydrology — the physics of water moving through r
 | **headgate** | the ACC control plane (Step 4): qualify-gate + bounded Committed Context State (CCS) |
 | **headrace** | the task queue crate — a headrace is the channel that delivers water to a mill |
 | **Basin** | the orchestration crate — a basin collects and routes flow |
-| **Flotilla** | agent teams — a flotilla is a fleet that moves together |
+| **Wellfield** | agent teams — a wellfield is a cluster of wells drawing from one aquifer |
 | **gauge** | the metrics/TUI crate — a gauge reads flow and pressure |
 | **sandbox** | the Docker isolation crate — kept verbatim for clarity |
 | **recharge** | consolidation: writing new knowledge back into the aquifer |

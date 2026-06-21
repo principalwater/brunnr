@@ -62,7 +62,7 @@ artesian onboard my-project ./memory-export \
 Each project gets its own collection. `user_id` is also written as payload tenancy metadata inside
 the project collection.
 
-**Many agents on one project (Flotilla teams).** A team of agents shares the project collection and
+**Many agents on one project (Wellfield teams).** A team of agents shares the project collection and
 reads each other's `shared` knowledge while keeping per-teammate `agent`/`task` scratch isolated —
 no extra setup beyond the shared backend. See [teams.md](teams.md) and
 [concurrency.md](concurrency.md).

@@ -7,7 +7,7 @@ members = [
     "crates/artesian-core",
     "crates/aquifer",
     "crates/sandbox",
-    "crates/flotilla",
+    "crates/wellfield",
     "crates/gauge",
     "crates/artesian-mcp",
     "crates/artesian-cli",
@@ -34,7 +34,7 @@ clap = { version = "=4.5.23", features = ["derive", "env"] }
 fastembed = { version = "5.16.1", default-features = false, features = ["hf-hub-rustls-tls", "ort-download-binaries-rustls-tls"] }
 futures-core = "0.3"
 futures-util = "0.3"
-flotilla = { path = "crates/flotilla" }
+wellfield = { path = "crates/wellfield" }
 aquifer = { path = "crates/aquifer" }
 nix = { version = "0.29", features = ["process", "signal"] }
 pgvector = { version = "0.4", features = ["postgres"] }

@@ -155,7 +155,6 @@ dependencies = [
  "artesian-test-support",
  "basin",
  "clap",
- "flotilla",
  "headgate",
  "headrace",
  "sandbox",
@@ -164,6 +163,7 @@ dependencies = [
  "tokio",
  "toml",
  "toml_edit",
+ "wellfield",
 ]
 
 [[package]]
@@ -191,7 +191,6 @@ dependencies = [
  "artesian-process-agent",
  "artesian-test-support",
  "clap",
- "flotilla",
  "headgate",
  "headrace",
  "rmcp",
@@ -201,6 +200,7 @@ dependencies = [
  "tokio",
  "toml",
  "tracing-subscriber",
+ "wellfield",
 ]
 
 [[package]]
@@ -956,22 +956,6 @@ checksum = "843fba2746e448b37e26a819579957415c8cef339bf08564fe8b7ddbd959573c"
 dependencies = [
  "crc32fast",
  "miniz_oxide",
-]
-
-[[package]]
-name = "flotilla"
-version = "0.1.0"
-dependencies = [
- "artesian-core",
- "artesian-process-agent",
- "artesian-test-support",
- "chrono",
- "headrace",
- "serde",
- "serde_json",
- "serde_yaml",
- "thiserror 2.0.18",
- "tokio",
 ]
 
 [[package]]
@@ -3851,6 +3835,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52f5ee44c96cf55f1b349600768e3ece3a8f26010c05265ab73f945bb1a2eb9d"
 dependencies = [
  "rustls-pki-types",
+]
+
+[[package]]
+name = "wellfield"
+version = "0.1.0"
+dependencies = [
+ "artesian-core",
+ "artesian-process-agent",
+ "artesian-test-support",
+ "chrono",
+ "headrace",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]

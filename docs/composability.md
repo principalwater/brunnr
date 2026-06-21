@@ -18,7 +18,7 @@ in *just the memory-control brick* without rewriting how you drive your agent.
 | `aquifer` | Token-efficient memory + retrieval (`VectorStore`: sqlite-vec / Qdrant / pgvector; chunking, small-to-big, hybrid RRF, reranking, semantic cache) | Yes | your own vector DB, or files / mem0 by implementing `RecallStore` |
 | `headgate` | **ACC control plane** — bounded CCS, qualify-gate, commit-loop, pluggable judge + compressor | Yes — over *any* `RecallStore` | the unique brick; pair it with any data plane |
 | `gauge` | Evaluation — footprint / drift / hallucination, plus recall and agentic (memory-guides-action) benches | Yes | your own eval harness |
-| `basin` / `flotilla` / `headrace` | Orchestration / teams / task queue | Optional | your own multi-agent system |
+| `basin` / `wellfield` / `headrace` | Orchestration / teams / task queue | Optional | your own multi-agent system |
 | `sandbox` | Optional Docker isolation for workers | Optional | your own isolation |
 | `artesian-mcp` | MCP server exposing a *selectable subset* of tools | Yes | any MCP client (Codex, Claude Code, Zed) |
 | `artesian-cli` | CLI + the `artesiand` daemon | Yes | — |
@@ -33,7 +33,7 @@ swappable without touching the others.
 - **Just token-efficient memory.** Use `aquifer` + the `artesian-mcp` memory tools. Bring your own
   orchestration and agent loop.
 - **ACC + memory, my own multi-agent system.** Use `headgate` + `aquifer`; skip
-  `basin` / `flotilla`.
+  `basin` / `wellfield`.
 - **Everything.** The full stack: memory + control plane + orchestration + sandbox + eval.
 
 ## How you compose

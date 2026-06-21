@@ -425,7 +425,7 @@ async fn team_lifecycle_uses_definitions_plan_gate_and_cleanup() {
         .team_task_add(Parameters(TeamTaskAddRequest {
             team_id: "team".to_string(),
             title: "Run team task".to_string(),
-            description: Some("Exercise Flotilla lifecycle".to_string()),
+            description: Some("Exercise Wellfield lifecycle".to_string()),
             definition: Some("worker-a".to_string()),
             blockers: None,
         }))

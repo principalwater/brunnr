@@ -50,7 +50,7 @@ flowchart TD
 3. **Strict per-user (optional).** If users must never see each other's data, give each a
    collection (`<project>__<user>`); same trait, just more collections.
 
-**Agent teams (Flotilla)** are the canonical "many agents on one project" case: teammates share the
+**Agent teams (Wellfield)** are the canonical "many agents on one project" case: teammates share the
 project collection and read each other's `shared` knowledge, while their `agent`/`task` owners keep
 per-teammate scratch isolated — so a team coordinates over one memory without cross-contamination.
 See [teams.md](teams.md).

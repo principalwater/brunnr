@@ -24,10 +24,6 @@ use artesian_process_agent::{
     ProcessSupervisor,
 };
 use clap::{Parser, Subcommand, ValueEnum};
-use flotilla::{
-    load_role_definitions, role_summaries, TeamCreate, TeamMessage, TeamMessageKind, TeamRuntime,
-    TeamRuntimeConfig, TeamSpawn, TeamTaskAdd, TeamTaskClaim, TeamTaskComplete,
-};
 use headgate::{
     count_tokens, Headgate, HeadgateConfig, LifecycleEntry, MemoryRecallStore, RecallStore,
     SnapshotEntry, WorkingContextBundle, WorkingContextSnapshot,
@@ -38,6 +34,10 @@ use headrace::{
 };
 use serde_json::{json, Value};
 use toml_edit::{value, Array, DocumentMut, Item, Table};
+use wellfield::{
+    load_role_definitions, role_summaries, TeamCreate, TeamMessage, TeamMessageKind, TeamRuntime,
+    TeamRuntimeConfig, TeamSpawn, TeamTaskAdd, TeamTaskClaim, TeamTaskComplete,
+};
 
 const DEFAULT_CONFIG: &str = "artesian.toml";
 const MCP_SERVER_NAME: &str = "artesian-memory";
@@ -1107,7 +1107,7 @@ fn write_master_role_skill(memory_root: &Path) -> Result<()> {
     }
     fs::write(
         path,
-        "<!-- SPDX-License-Identifier: Apache-2.0 -->\n\n# Artesian Lead Role Skill\n\nWhen Artesian is running in `orchestrate` or `full` mode, inspect `agents.list` for reachable agents, models, and role definitions. Use `memory.context` for compact project recall. For multi-teammate work, create a Flotilla with `team.create`, admit definitions with `team.spawn`, coordinate through `team.task.*` and `team.message`, and gate accepted outcomes through the judge/master path before marking work done. For a single bounded subtask, `orchestrate.delegate(worker)` is still sufficient.\n",
+        "<!-- SPDX-License-Identifier: Apache-2.0 -->\n\n# Artesian Lead Role Skill\n\nWhen Artesian is running in `orchestrate` or `full` mode, inspect `agents.list` for reachable agents, models, and role definitions. Use `memory.context` for compact project recall. For multi-teammate work, create a Wellfield with `team.create`, admit definitions with `team.spawn`, coordinate through `team.task.*` and `team.message`, and gate accepted outcomes through the judge/master path before marking work done. For a single bounded subtask, `orchestrate.delegate(worker)` is still sufficient.\n",
     )?;
     Ok(())
 }

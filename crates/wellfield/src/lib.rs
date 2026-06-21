@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Artesian-native agent teams (Flotilla).
+//! Artesian-native agent teams (Wellfield).
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 #[derive(Debug, thiserror::Error)]
-pub enum FlotillaError {
+pub enum WellfieldError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
     #[error("failed to decode agent definition: {0}")]
@@ -48,13 +48,13 @@ pub enum FlotillaError {
     Task(#[from] headrace::TaskError),
 }
 
-impl From<AgentError> for FlotillaError {
+impl From<AgentError> for WellfieldError {
     fn from(value: AgentError) -> Self {
         Self::Agent(value.to_string())
     }
 }
 
-pub type FlotillaResult<T> = Result<T, FlotillaError>;
+pub type WellfieldResult<T> = Result<T, WellfieldError>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -135,7 +135,7 @@ impl ToolList {
     }
 }
 
-pub fn load_role_definitions(repo_root: impl AsRef<Path>) -> FlotillaResult<Vec<RoleDefinition>> {
+pub fn load_role_definitions(repo_root: impl AsRef<Path>) -> WellfieldResult<Vec<RoleDefinition>> {
     let repo_root = repo_root.as_ref();
     let mut definitions = Vec::new();
     definitions.extend(load_definition_dir(
@@ -160,7 +160,7 @@ pub fn role_summaries(definitions: &[RoleDefinition]) -> Vec<AgentRoleDefinition
 fn load_definition_dir(
     directory: PathBuf,
     source: RoleDefinitionSource,
-) -> FlotillaResult<Vec<RoleDefinition>> {
+) -> WellfieldResult<Vec<RoleDefinition>> {
     let mut definitions = Vec::new();
     let read_dir = match fs::read_dir(&directory) {
         Ok(read_dir) => read_dir,
@@ -186,7 +186,7 @@ pub fn parse_role_definition(
     path: impl AsRef<Path>,
     text: &str,
     source: RoleDefinitionSource,
-) -> FlotillaResult<RoleDefinition> {
+) -> WellfieldResult<RoleDefinition> {
     let path = path.as_ref();
     let (header, body) = split_frontmatter(text)?;
     let header: DefinitionFrontmatter = serde_yaml::from_str(header)?;
@@ -222,18 +222,18 @@ pub fn parse_role_definition(
     })
 }
 
-fn split_frontmatter(text: &str) -> FlotillaResult<(&str, &str)> {
+fn split_frontmatter(text: &str) -> WellfieldResult<(&str, &str)> {
     let rest = text
         .strip_prefix("---\n")
-        .ok_or_else(|| FlotillaError::InvalidDefinition("missing YAML frontmatter".to_string()))?;
+        .ok_or_else(|| WellfieldError::InvalidDefinition("missing YAML frontmatter".to_string()))?;
     rest.split_once("\n---\n").ok_or_else(|| {
-        FlotillaError::InvalidDefinition("unterminated YAML frontmatter".to_string())
+        WellfieldError::InvalidDefinition("unterminated YAML frontmatter".to_string())
     })
 }
 
-fn required_header(value: Option<String>, name: &str, path: &Path) -> FlotillaResult<String> {
+fn required_header(value: Option<String>, name: &str, path: &Path) -> WellfieldResult<String> {
     let Some(value) = value.and_then(empty_to_none) else {
-        return Err(FlotillaError::InvalidDefinition(format!(
+        return Err(WellfieldError::InvalidDefinition(format!(
             "{} missing required `{name}`",
             path.display()
         )));
@@ -246,8 +246,8 @@ fn empty_to_none(value: String) -> Option<String> {
     (!value.is_empty()).then_some(value)
 }
 
-fn parse_kind(input: &str) -> FlotillaResult<Role> {
-    Role::from_str(input).map_err(|error| FlotillaError::InvalidDefinition(error.to_string()))
+fn parse_kind(input: &str) -> WellfieldResult<Role> {
+    Role::from_str(input).map_err(|error| WellfieldError::InvalidDefinition(error.to_string()))
 }
 
 fn infer_kind(name: &str) -> Role {
@@ -453,7 +453,7 @@ impl TeamRuntime {
         record
     }
 
-    pub async fn spawn_teammate(&mut self, request: TeamSpawn) -> FlotillaResult<TeammateRecord> {
+    pub async fn spawn_teammate(&mut self, request: TeamSpawn) -> WellfieldResult<TeammateRecord> {
         let definition = self.definition(&request.definition)?.clone();
         let binding = self.binding_for_definition(&definition)?;
         let team = self.team(&request.team_id)?;
@@ -496,7 +496,7 @@ impl TeamRuntime {
         Ok(record)
     }
 
-    pub async fn add_task(&mut self, request: TeamTaskAdd) -> FlotillaResult<Task> {
+    pub async fn add_task(&mut self, request: TeamTaskAdd) -> WellfieldResult<Task> {
         let definition_name = match request.definition {
             Some(name) => Some(name),
             None => self.default_worker_definition_name(),
@@ -519,10 +519,10 @@ impl TeamRuntime {
         Ok(task)
     }
 
-    pub async fn claim_task(&mut self, request: TeamTaskClaim) -> FlotillaResult<Option<Task>> {
+    pub async fn claim_task(&mut self, request: TeamTaskClaim) -> WellfieldResult<Option<Task>> {
         let requires_approval = self.requires_plan_approval(&request.team_id, &request)?;
         if let (true, Some(task_id)) = (requires_approval, request.task_id.as_ref()) {
-            return Err(FlotillaError::PlanApprovalRequired(task_id.clone()));
+            return Err(WellfieldError::PlanApprovalRequired(task_id.clone()));
         }
         let task_store = FilesTaskStore::new(&self.config.task_root);
         let claimed = task_store
@@ -548,12 +548,12 @@ impl TeamRuntime {
         Ok(claimed)
     }
 
-    pub async fn complete_task(&mut self, request: TeamTaskComplete) -> FlotillaResult<Task> {
+    pub async fn complete_task(&mut self, request: TeamTaskComplete) -> WellfieldResult<Task> {
         let reviewer_role = self
             .teammate_role(&request.team_id, &request.reviewer)
             .unwrap_or(Role::Master);
         if !matches!(reviewer_role, Role::Judge | Role::Master) {
-            return Err(FlotillaError::InvalidDefinition(
+            return Err(WellfieldError::InvalidDefinition(
                 "only judge or master teammates may complete a task".to_string(),
             ));
         }
@@ -593,7 +593,7 @@ impl TeamRuntime {
         Ok(task)
     }
 
-    pub async fn message(&mut self, request: TeamMessage) -> FlotillaResult<TeamMessageOutcome> {
+    pub async fn message(&mut self, request: TeamMessage) -> WellfieldResult<TeamMessageOutcome> {
         let correlation_id = request
             .task_id
             .clone()
@@ -624,7 +624,7 @@ impl TeamRuntime {
         }
         let response = if request.execute {
             let Some(to) = request.to.as_ref() else {
-                return Err(FlotillaError::TeammateNotFound(
+                return Err(WellfieldError::TeammateNotFound(
                     "execute requires a target teammate".to_string(),
                 ));
             };
@@ -638,17 +638,17 @@ impl TeamRuntime {
         Ok(TeamMessageOutcome { event, response })
     }
 
-    pub fn status(&self, team_id: &str) -> FlotillaResult<TeamRecord> {
+    pub fn status(&self, team_id: &str) -> WellfieldResult<TeamRecord> {
         self.team(team_id).map(TeamState::record)
     }
 
-    pub fn cleanup(&mut self, team_id: &str) -> FlotillaResult<TeamRecord> {
+    pub fn cleanup(&mut self, team_id: &str) -> WellfieldResult<TeamRecord> {
         let supervisor = ProcessSupervisor::new(&self.config.registry_dir)
             .with_termination_grace(self.config.termination_grace)
             .with_max_concurrent_spawns(self.config.max_concurrent_spawns);
         supervisor
             .terminate_current_owner()
-            .map_err(|error| FlotillaError::Agent(error.to_string()))?;
+            .map_err(|error| WellfieldError::Agent(error.to_string()))?;
         let team = self.team_mut(team_id)?;
         for teammate in team.teammates.values_mut() {
             teammate.status = TeammateStatus::Complete;
@@ -663,14 +663,14 @@ impl TeamRuntime {
         team_id: &str,
         teammate_name: &str,
         content: &str,
-    ) -> FlotillaResult<String> {
+    ) -> WellfieldResult<String> {
         let team = self.team(team_id)?;
         let teammate = team
             .teammates
             .get(teammate_name)
-            .ok_or_else(|| FlotillaError::TeammateNotFound(teammate_name.to_string()))?;
+            .ok_or_else(|| WellfieldError::TeammateNotFound(teammate_name.to_string()))?;
         if teammate.status == TeammateStatus::Paused {
-            return Err(FlotillaError::AdmissionPaused {
+            return Err(WellfieldError::AdmissionPaused {
                 name: teammate_name.to_string(),
                 reason: teammate
                     .paused_reason
@@ -698,7 +698,7 @@ impl TeamRuntime {
         &self,
         team_id: &str,
         request: &TeamTaskClaim,
-    ) -> FlotillaResult<bool> {
+    ) -> WellfieldResult<bool> {
         let team = self.team(team_id)?;
         let Some(task_id) = request.task_id.as_ref() else {
             return Ok(false);
@@ -713,7 +713,7 @@ impl TeamRuntime {
         Ok(team.plan_approval_required || role_requires)
     }
 
-    fn binding_for_definition(&self, definition: &RoleDefinition) -> FlotillaResult<AgentBinding> {
+    fn binding_for_definition(&self, definition: &RoleDefinition) -> WellfieldResult<AgentBinding> {
         let base = definition
             .agent
             .as_ref()
@@ -734,7 +734,7 @@ impl TeamRuntime {
             .clone()
             .or_else(|| base.map(|binding| binding.agent.clone()))
         else {
-            return Err(FlotillaError::InvalidDefinition(format!(
+            return Err(WellfieldError::InvalidDefinition(format!(
                 "definition '{}' has no agent and no {} binding is configured",
                 definition.name,
                 definition.kind.canonical_alias()
@@ -747,7 +747,7 @@ impl TeamRuntime {
             .iter()
             .any(|entry| entry.agent == agent && entry.reachable)
         {
-            return Err(FlotillaError::Agent(format!(
+            return Err(WellfieldError::Agent(format!(
                 "agent '{agent}' is not reachable in the catalog; run `artesian agents refresh`"
             )));
         }
@@ -801,26 +801,26 @@ impl TeamRuntime {
         )
     }
 
-    fn definition(&self, name: &str) -> FlotillaResult<&RoleDefinition> {
+    fn definition(&self, name: &str) -> WellfieldResult<&RoleDefinition> {
         self.config
             .definitions
             .iter()
             .find(|definition| definition.name == name)
             .ok_or_else(|| {
-                FlotillaError::InvalidDefinition(format!("unknown role definition: {name}"))
+                WellfieldError::InvalidDefinition(format!("unknown role definition: {name}"))
             })
     }
 
-    fn team(&self, team_id: &str) -> FlotillaResult<&TeamState> {
+    fn team(&self, team_id: &str) -> WellfieldResult<&TeamState> {
         self.teams
             .get(team_id)
-            .ok_or_else(|| FlotillaError::TeamNotFound(team_id.to_string()))
+            .ok_or_else(|| WellfieldError::TeamNotFound(team_id.to_string()))
     }
 
-    fn team_mut(&mut self, team_id: &str) -> FlotillaResult<&mut TeamState> {
+    fn team_mut(&mut self, team_id: &str) -> WellfieldResult<&mut TeamState> {
         self.teams
             .get_mut(team_id)
-            .ok_or_else(|| FlotillaError::TeamNotFound(team_id.to_string()))
+            .ok_or_else(|| WellfieldError::TeamNotFound(team_id.to_string()))
     }
 
     fn teammate_role(&self, team_id: &str, teammate_name: &str) -> Option<Role> {
@@ -846,7 +846,7 @@ impl TeamRuntime {
         agent_id: &str,
         event_type: EventType,
         payload: serde_json::Value,
-    ) -> FlotillaResult<EventEnvelope> {
+    ) -> WellfieldResult<EventEnvelope> {
         self.event_counter += 1;
         let event = EventEnvelope::new(
             format!("team-evt-{}", self.event_counter),
@@ -1190,7 +1190,7 @@ mod tests {
             })
             .await
             .expect_err("plan approval should block claim");
-        assert!(matches!(blocked, FlotillaError::PlanApprovalRequired(_)));
+        assert!(matches!(blocked, WellfieldError::PlanApprovalRequired(_)));
 
         runtime
             .message(TeamMessage {

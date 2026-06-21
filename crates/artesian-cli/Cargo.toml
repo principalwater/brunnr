@@ -12,7 +12,7 @@ anyhow.workspace = true
 artesian-core = { path = "../artesian-core" }
 artesian-process-agent = { path = "../artesian-process-agent" }
 clap.workspace = true
-flotilla.workspace = true
+wellfield.workspace = true
 sandbox = { path = "../sandbox" }
 aquifer = { path = "../aquifer" }
 serde.workspace = true

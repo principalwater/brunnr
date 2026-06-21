@@ -32,7 +32,7 @@ New here? Start with **[onboarding](onboarding.md)**, then **[positioning](posit
 | Doc | What it covers |
 |---|---|
 | [orchestration.md](orchestration.md) | Master/worker/judge, topologies, model-aware bindings, router |
-| [teams.md](teams.md) | Agent teams (Flotilla): vendor-neutral lead + teammates over shared memory |
+| [teams.md](teams.md) | Agent teams (Wellfield): vendor-neutral lead + teammates over shared memory |
 | [task-tracking.md](task-tracking.md) | headrace task tracker: DAG; md / vector / external (Jira, Linear) |
 | [concurrency.md](concurrency.md) | Multi-tenancy: many agents/users, parallel access, session lanes |
 
