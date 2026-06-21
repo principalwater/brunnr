@@ -308,6 +308,9 @@ impl<V: VectorStore> VectorMemoryBackend<V> {
             "session_id",
             "task_id",
             "user_id",
+            // Indexed for time-range and recency filtering (datetime index on Qdrant, JSON
+            // expression index on SQLite) so temporal decay/supersession need not full-scan.
+            "created_at",
             // Indexed so small-to-big sibling lookups (filter by parent) hit an index
             // instead of scanning the whole collection.
             "metadata.parent_node",

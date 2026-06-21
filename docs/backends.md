@@ -102,7 +102,14 @@ Storage:
 - Qdrant owns the collection and vector index.
 - Artesian stores the normalized memory payload in Qdrant point payload.
 - Upserts use `wait=true` for read-after-write behavior.
-- Payload indexes are created for `node_id` and tenancy fields.
+- New collections are created with a collection-level HNSW config (`m=16`, `ef_construct=100`) —
+  a balanced recall/build trade-off for the 10³–10⁵-point collections Artesian targets.
+- `quantization: "int8"` is applied at the collection level as Qdrant scalar quantization
+  (`quantile=0.99`, `always_ram=true`): 4×-smaller vectors stay in RAM for fast scoring while the
+  full-precision originals on disk back rescoring. Float32 stays the default.
+- Payload indexes are typed per field: full-text on `content`, **datetime on `created_at`** (so
+  recency/time-range filters use an index instead of a full scan), integer on token counts, and
+  keyword on `node_id` and the tenancy fields.
 - The first shared embedding default is pinned to `intfloat/multilingual-e5-small` with 384
   dimensions.
 

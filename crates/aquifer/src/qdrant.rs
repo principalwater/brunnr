@@ -7,7 +7,8 @@ use futures_util::{future::BoxFuture, FutureExt};
 use qdrant_client::{
     qdrant::{
         Condition, CreateCollectionBuilder, CreateFieldIndexCollectionBuilder, FieldType, Filter,
-        GetPointsBuilder, PointId, PointStruct, QueryPointsBuilder, RetrievedPoint, ScoredPoint,
+        GetPointsBuilder, HnswConfigDiffBuilder, PointId, PointStruct, QuantizationType,
+        QueryPointsBuilder, RetrievedPoint, ScalarQuantizationBuilder, ScoredPoint,
         ScrollPointsBuilder, UpsertPointsBuilder, Value, VectorParamsBuilder, VectorsOutput,
     },
     Payload, Qdrant,
@@ -24,6 +25,16 @@ use crate::{
 };
 
 pub type QdrantBackend = VectorMemoryBackend<QdrantVectorStore>;
+
+/// HNSW graph connectivity (edges per node). 16 is Qdrant's balanced default — enough recall
+/// without bloating the index for the 10^3–10^5-point collections Artesian targets.
+const QDRANT_HNSW_M: u64 = 16;
+/// HNSW build-time neighbour search width. Higher trades slower build for better recall; 100 is
+/// the recommended balance at this scale.
+const QDRANT_HNSW_EF_CONSTRUCT: u64 = 100;
+/// Scalar-quantization clipping quantile: drop the extreme 1% of the value distribution before
+/// the int8 mapping so outliers do not compress the useful range.
+const QDRANT_QUANT_QUANTILE: f32 = 0.99;
 
 #[derive(Debug, Clone)]
 pub struct QdrantVectorStoreConfig {
@@ -207,15 +218,31 @@ impl VectorStore for QdrantVectorStore {
                 return Ok(());
             }
 
+            // Tune at the collection level so the config is explicit and inspectable:
+            // an HNSW graph sized for this scale, and (opt-in) Int8 scalar quantization that
+            // keeps 4x-smaller vectors in RAM for fast scoring while full-precision originals
+            // stay on disk for rescoring. The default stays Float32.
+            let mut builder = CreateCollectionBuilder::new(&collection.name)
+                .vectors_config(VectorParamsBuilder::new(
+                    collection.dimensions as u64,
+                    qdrant_distance(collection.distance),
+                ))
+                .hnsw_config(
+                    HnswConfigDiffBuilder::default()
+                        .m(QDRANT_HNSW_M)
+                        .ef_construct(QDRANT_HNSW_EF_CONSTRUCT),
+                );
+            if collection.quantization == VectorQuantization::Int8 {
+                builder = builder.quantization_config(
+                    ScalarQuantizationBuilder::default()
+                        .r#type(QuantizationType::Int8 as i32)
+                        .quantile(QDRANT_QUANT_QUANTILE)
+                        .always_ram(true),
+                );
+            }
+
             self.client
-                .create_collection(
-                    CreateCollectionBuilder::new(&collection.name).vectors_config(
-                        VectorParamsBuilder::new(
-                            collection.dimensions as u64,
-                            qdrant_distance(collection.distance),
-                        ),
-                    ),
-                )
+                .create_collection(builder)
                 .await
                 .map_err(qdrant_error)?;
             Ok(())
@@ -230,11 +257,7 @@ impl VectorStore for QdrantVectorStore {
     ) -> BoxFuture<'_, MemoryResult<()>> {
         let collection = collection.to_string();
         async move {
-            let field_type = if index.field == "content" {
-                FieldType::Text
-            } else {
-                FieldType::Keyword
-            };
+            let field_type = payload_index_field_type(&index.field);
             let result = self
                 .client
                 .create_field_index(
@@ -444,6 +467,18 @@ pub async fn replicate_collection(
 
 /// Extract a point's single unnamed dense vector, if present (handles both the legacy `data`
 /// field and the newer nested dense oneof).
+/// Choose the Qdrant payload index type for a field so filters use the right index:
+/// full-text for `content`, datetime for RFC 3339 timestamp fields (range/recency filtering),
+/// integer for token counts, keyword for everything else (the equality-filter default).
+fn payload_index_field_type(field: &str) -> FieldType {
+    match field {
+        "content" => FieldType::Text,
+        "created_at" | "updated_at" | "committed_at" => FieldType::Datetime,
+        "tokens" | "token_count" => FieldType::Integer,
+        _ => FieldType::Keyword,
+    }
+}
+
 // Modern Qdrant servers (1.10+) return the unnamed dense vector through the
 // `vector_output::Vector::Dense` oneof; older servers populate the now-deprecated
 // flat `VectorOutput::data` field. Support both so replication works across versions.
