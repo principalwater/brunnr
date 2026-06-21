@@ -67,6 +67,39 @@ reads each other's `shared` knowledge while keeping per-teammate `agent`/`task` 
 no extra setup beyond the shared backend. See [teams.md](teams.md) and
 [concurrency.md](concurrency.md).
 
+### Daily workflow (once onboarded)
+
+After `init`/`onboard`, every task can ride the same memory:
+
+```shell
+# Run a task to completion against a goal, memory-first each turn.
+# The worker gets goal-relevant recall in $ARTESIAN_RECALL; each turn's
+# outcome is committed run-scoped so it never clogs durable memory.
+artesian loop --goal "cargo test" \
+  --worker-cmd "codex exec 'fix the failing tests, using $ARTESIAN_RECALL'" \
+  --max-turns 10
+
+# Reclaim any orphaned / runaway / hung teammate processes (also runs
+# automatically before each new spawn). Over MCP: the team.gc tool.
+artesian team gc --ttl-secs 3600 --heartbeat-timeout-secs 600
+```
+
+See [loop-engineering.md](loop-engineering.md) for the recall→act→verify→commit cycle and
+[teams.md](teams.md) for orchestration.
+
+**Working offline (laptop leaves the LAN).** Mirror a shared Qdrant collection into a local one
+before you go, work against the local copy, then mirror back on return — one command each way, so an
+agent can do it over MCP. Endpoints live in your local config, never in the repo:
+
+```shell
+# before leaving: LAN -> local docker qdrant
+artesian replicate --from-url http://HOST:6333 --to-url http://localhost:6333 --collection my-project
+# on return: local -> LAN (merges by point id)
+artesian replicate --from-url http://localhost:6333 --to-url http://HOST:6333 --collection my-project
+# health-only check, no copy
+artesian replicate --from-url http://HOST:6333 --to-url http://localhost:6333 --collection my-project --status
+```
+
 **More vector engines.** `qdrant` and `sqlite-vec` are the wired-in `--backend` choices; any other
 vector store (e.g. PostgreSQL + `pgvector`) is a thin feature-gated `VectorStore` adapter that
 inherits the same chunk-on-store, hybrid RRF, and tenancy. See

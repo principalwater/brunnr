@@ -35,8 +35,8 @@ use headrace::{
 use serde_json::{json, Value};
 use toml_edit::{value, Array, DocumentMut, Item, Table};
 use wellfield::{
-    load_role_definitions, role_summaries, TeamCreate, TeamMessage, TeamMessageKind, TeamRuntime,
-    TeamRuntimeConfig, TeamSpawn, TeamTaskAdd, TeamTaskClaim, TeamTaskComplete,
+    load_role_definitions, role_summaries, TeamCreate, TeamGcOptions, TeamMessage, TeamMessageKind,
+    TeamRuntime, TeamRuntimeConfig, TeamSpawn, TeamTaskAdd, TeamTaskClaim, TeamTaskComplete,
 };
 
 const DEFAULT_CONFIG: &str = "artesian.toml";
@@ -348,6 +348,17 @@ enum TeamCommand {
     },
     Cleanup {
         team_id: String,
+        #[arg(long, default_value = DEFAULT_CONFIG)]
+        config: PathBuf,
+    },
+    /// Garbage-collect orphaned, expired, or hung teammate process groups across the registry
+    /// (not scoped to one team). Reclaims spawns whose owner exited, whose age exceeds --ttl-secs,
+    /// or whose last heartbeat is older than --heartbeat-timeout-secs.
+    Gc {
+        #[arg(long)]
+        ttl_secs: Option<u64>,
+        #[arg(long)]
+        heartbeat_timeout_secs: Option<u64>,
         #[arg(long, default_value = DEFAULT_CONFIG)]
         config: PathBuf,
     },
@@ -1208,6 +1219,31 @@ async fn team(command: TeamCommand) -> Result<()> {
             println!(
                 "{}",
                 serde_json::to_string_pretty(&runtime.cleanup(&team_id)?)?
+            );
+        }
+        TeamCommand::Gc {
+            ttl_secs,
+            heartbeat_timeout_secs,
+            config,
+        } => {
+            let runtime = team_runtime(&config).await?;
+            let mut options = TeamGcOptions::default();
+            if let Some(secs) = ttl_secs {
+                options = options.with_ttl(Duration::from_secs(secs));
+            }
+            if let Some(secs) = heartbeat_timeout_secs {
+                options = options.with_heartbeat_timeout(Duration::from_secs(secs));
+            }
+            let report = runtime.gc(options)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({
+                    "scanned": report.scanned,
+                    "terminated": report.terminated,
+                    "removed": report.removed,
+                    "expired": report.expired,
+                    "skipped_unverified": report.skipped_unverified,
+                }))?
             );
         }
     }
