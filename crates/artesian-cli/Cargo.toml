@@ -10,6 +10,7 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 artesian-core = { path = "../artesian-core" }
+chrono.workspace = true
 artesian-process-agent = { path = "../artesian-process-agent" }
 clap.workspace = true
 wellfield.workspace = true

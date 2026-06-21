@@ -548,6 +548,28 @@ enum MemoryCommand {
         #[arg(long, value_enum)]
         backend: Option<BackendArg>,
     },
+    /// Distill raw text into self-contained atomic facts via an LLM (resolve coreferences, anchor
+    /// relative dates), optionally storing each as a memory atom. Needs an `[acc.compressor]` or
+    /// `[acc.judge]` LLM endpoint (point it at a local Ollama / LM Studio for zero token cost) and
+    /// a build with `--features llm`.
+    Distill {
+        /// Raw text to distill. Omit and pass --file to read from a file instead.
+        text: Option<String>,
+        #[arg(long)]
+        file: Option<PathBuf>,
+        /// Reference date for anchoring relative time references (defaults to today).
+        #[arg(long)]
+        reference_date: Option<String>,
+        /// Store each extracted fact as a memory atom (tagged `fact`).
+        #[arg(long)]
+        store: bool,
+        #[arg(long, default_value = DEFAULT_CONFIG)]
+        config: PathBuf,
+        #[arg(long, default_value = ".artesian")]
+        root: PathBuf,
+        #[arg(long, value_enum)]
+        backend: Option<BackendArg>,
+    },
     /// Run one ACC commit-loop cycle: recall, qualify-gate, and admit into the bounded
     /// committed context state; print the committed context and the cycle metrics. Defaults
     /// come from the `[acc]` block of artesian.toml; flags override per invocation.
@@ -1131,6 +1153,80 @@ async fn run_loop(
         println!("  goal not met after turn {turn}");
     }
     bail!("loop reached max-turns ({max_turns}) without the goal holding");
+}
+
+/// Distill raw text into self-contained atomic facts via an LLM, optionally storing each as an atom.
+#[cfg(feature = "llm")]
+#[allow(clippy::too_many_arguments)]
+async fn distill(
+    text: Option<String>,
+    file: Option<PathBuf>,
+    reference_date: Option<String>,
+    store: bool,
+    config: PathBuf,
+    root: PathBuf,
+    backend: Option<BackendArg>,
+) -> Result<()> {
+    let raw = match (text, file) {
+        (Some(text), _) => text,
+        (None, Some(file)) => {
+            fs::read_to_string(&file).with_context(|| format!("read {}", file.display()))?
+        }
+        (None, None) => bail!("provide text to distill, or --file <path>"),
+    };
+    let acc = load_config(&config)
+        .map(|loaded| loaded.acc)
+        .unwrap_or_default();
+    let llm = acc
+        .compressor
+        .as_ref()
+        .or(acc.judge.as_ref())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "distill needs an LLM endpoint; configure [acc.compressor] or [acc.judge] in {}",
+                config.display()
+            )
+        })?;
+    let client = headgate::llm_client_from_config(llm)?;
+    let reference_date =
+        reference_date.unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%d").to_string());
+    let facts = headgate::extract_atomic_facts(client.as_ref(), &raw, &reference_date).await?;
+    if facts.is_empty() {
+        println!("(no durable facts extracted)");
+        return Ok(());
+    }
+    for (index, fact) in facts.iter().enumerate() {
+        println!("{}. {fact}", index + 1);
+    }
+    if store {
+        let memory_config = memory_config_for_command(&config, root, backend)?;
+        let backend = open_memory_backend(&memory_config)?;
+        let mut stored = 0usize;
+        for fact in &facts {
+            let mut memory = StoreMemory::atom(fact.clone());
+            memory.tags = vec!["fact".to_string()];
+            if backend.store(memory).await.is_ok() {
+                stored += 1;
+            }
+        }
+        println!("\nstored {stored} fact atom(s)");
+    }
+    Ok(())
+}
+
+/// `memory distill` is unavailable without the LLM layer compiled in.
+#[cfg(not(feature = "llm"))]
+#[allow(clippy::too_many_arguments)]
+async fn distill(
+    _text: Option<String>,
+    _file: Option<PathBuf>,
+    _reference_date: Option<String>,
+    _store: bool,
+    _config: PathBuf,
+    _root: PathBuf,
+    _backend: Option<BackendArg>,
+) -> Result<()> {
+    bail!("`memory distill` requires the `llm` feature; rebuild with --features llm")
 }
 
 /// Replicate a Qdrant collection from one endpoint to another (scroll + upsert; merges by id).
@@ -1829,6 +1925,15 @@ async fn memory(command: MemoryCommand) -> Result<()> {
                 );
             }
         }
+        MemoryCommand::Distill {
+            text,
+            file,
+            reference_date,
+            store,
+            config,
+            root,
+            backend,
+        } => distill(text, file, reference_date, store, config, root, backend).await?,
         MemoryCommand::Commit {
             query,
             budget_tokens,

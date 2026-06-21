@@ -36,6 +36,8 @@ mod compressor;
 mod controller;
 #[cfg(feature = "llm")]
 mod council;
+#[cfg(feature = "llm")]
+mod fact;
 mod gate;
 #[cfg(feature = "headroom")]
 mod headroom;
@@ -62,6 +64,8 @@ pub use recall::{MemoryRecallStore, RecallItem, RecallStore, StaticRecallStore};
 pub use compressor::LlmCompressor;
 #[cfg(feature = "llm")]
 pub use council::CouncilJudge;
+#[cfg(feature = "llm")]
+pub use fact::extract_atomic_facts;
 #[cfg(feature = "headroom")]
 pub use headroom::HeadroomCompressor;
 #[cfg(feature = "llm")]

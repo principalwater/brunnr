@@ -182,6 +182,18 @@ context, never an arbitrary prefix. This is why the [benchmark](../benchmarks/RE
 per-query cost bounded — small-to-big windows, not whole documents — even as the durable memory
 grows past a million tokens.
 
+#### Atomic-fact distillation (opt-in, LLM)
+
+Structural chunking is zero-LLM and the default. For noisy conversational sources it can leave
+**dangling references** — "he", "it", "last Friday" — that retrieve poorly in isolation. The opt-in
+`artesian memory distill` pass (an AtomMem-style "fact executor") rewrites raw text into
+**self-contained atomic facts**: every pronoun resolved to its named entity and every relative date
+anchored to an absolute one, one durable fact per line, with role-marker neutralization so untrusted
+text cannot inject instructions. It costs one LLM call per text — point `[acc.compressor]` (or
+`[acc.judge]`) at a local Ollama / LM Studio for zero token cost — and `--store` files each fact as a
+`fact`-tagged atom. Use it to seed a value-dense store from transcripts; structural chunking remains
+the default for code and docs.
+
 ### 3.6 Retrieval enhancements
 
 The default path stays cheap and non-intrusive. Artesian now exposes these measurable stages:
