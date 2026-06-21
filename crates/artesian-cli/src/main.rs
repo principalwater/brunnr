@@ -208,6 +208,25 @@ enum Command {
         #[arg(long)]
         budget_tokens: Option<usize>,
     },
+    /// Run an autonomous memory-first loop: repeat a worker action until a goal command succeeds
+    /// (exit 0), writing a resume anchor each turn. The worker can be any shell command — a script
+    /// or an agent CLI such as `codex exec '...'`.
+    Loop {
+        /// Verifier command; exit code 0 means the goal holds (the stop condition).
+        #[arg(long)]
+        goal: String,
+        /// Per-iteration worker action (a shell command). Omit with `--poll` to only re-check.
+        #[arg(long)]
+        worker_cmd: Option<String>,
+        /// Maximum iterations before giving up.
+        #[arg(long, default_value_t = 10)]
+        max_turns: u32,
+        /// Poll mode: do not run a worker, only re-check the goal each turn.
+        #[arg(long)]
+        poll: bool,
+        #[arg(long, default_value = ".artesian")]
+        root: PathBuf,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -754,7 +773,66 @@ async fn main() -> Result<()> {
             root,
             budget_tokens,
         } => perf(config, root, budget_tokens).await,
+        Command::Loop {
+            goal,
+            worker_cmd,
+            max_turns,
+            poll,
+            root,
+        } => run_loop(goal, worker_cmd, max_turns, poll, root).await,
     }
+}
+
+/// Run a shell command, returning whether it exited successfully (exit code 0).
+fn run_shell(cmd: &str) -> Result<bool> {
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(cmd)
+        .status()
+        .with_context(|| format!("run command: {cmd}"))?;
+    Ok(status.success())
+}
+
+/// An autonomous memory-first loop: repeat the worker action until the goal command succeeds,
+/// writing a resume anchor each turn. Bounded by `max_turns`.
+async fn run_loop(
+    goal: String,
+    worker_cmd: Option<String>,
+    max_turns: u32,
+    poll: bool,
+    root: PathBuf,
+) -> Result<()> {
+    let anchor_store = AnchorAnchorStore::new(&root);
+    println!("loop: goal = {goal:?}, max-turns = {max_turns}");
+    if run_shell(&goal)? {
+        println!("✓ goal already holds (0 turns)");
+        return Ok(());
+    }
+    for turn in 1..=max_turns {
+        if poll {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        } else if let Some(cmd) = &worker_cmd {
+            println!("── turn {turn}/{max_turns}: worker ─ {cmd}");
+            if !run_shell(cmd)? {
+                eprintln!("  worker exited non-zero on turn {turn}");
+            }
+        }
+        let _ = anchor_store
+            .set(SessionAnchor::new(
+                format!(
+                    "loop turn {turn}: {}",
+                    worker_cmd.as_deref().unwrap_or("(poll)")
+                ),
+                format!("verify goal: {goal}"),
+            ))
+            .await;
+        if run_shell(&goal)? {
+            println!("✓ goal holds after {turn} turn(s)");
+            return Ok(());
+        }
+        println!("  goal not met after turn {turn}");
+    }
+    bail!("loop reached max-turns ({max_turns}) without the goal holding");
 }
 
 async fn task(command: TaskCommand) -> Result<()> {

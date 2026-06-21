@@ -90,9 +90,14 @@ The shape:
 For a single bounded subtask you do not need a wellfield — `orchestrate.delegate(worker)` runs one
 worker under the judge gate.
 
-> **Roadmap:** a convenience `artesian loop --goal "<condition>"` that drives this cycle
-> daemon-side (schedule, run, verify, repeat) without a host agent in the seat. The building blocks
-> above already make the pattern available over MCP.
+> **`artesian loop` (available now).** A convenience command drives this cycle directly — it repeats
+> the worker action until the goal command exits 0 (the verifier gate), writing a resume anchor to
+> memory each turn, bounded by `--max-turns`:
+>
+> `artesian loop --goal "cargo test" --worker-cmd "codex exec 'fix the failing tests'" --max-turns 10`
+>
+> The worker is any shell command — a script or an agent CLI (`codex exec`, `claude -p`, …), so you
+> can drive a different model per loop. `--poll` re-checks the goal each turn without a worker.
 
 ## Why memory-first
 
