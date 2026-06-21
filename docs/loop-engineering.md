@@ -97,10 +97,14 @@ worker under the judge gate.
 >
 > Each turn is memory-first end to end:
 >
-> 1. **recall** — the loop searches the configured backend for goal-relevant memory and passes the
->    top hits to the worker in `ARTESIAN_RECALL` (alongside `ARTESIAN_GOAL`, `ARTESIAN_RUN_ID`, and
->    `ARTESIAN_TURN`). A worker prompt can fold `$ARTESIAN_RECALL` in so each pass starts from what
->    the last pass learned.
+> 1. **recall → goal packet** — the loop assembles a bounded, **goal-scoped packet** in
+>    `ARTESIAN_PACKET`: the **goal**, the **invariants that must hold** (memories tagged `invariant`,
+>    always injected regardless of relevance), the **last failed verifier check** (carried from the
+>    previous turn), and the most relevant memory. This is "hand the agent just the goal, invariants,
+>    and last failed check" — not a flat wiki dump. The raw recall is also passed as `ARTESIAN_RECALL`
+>    (alongside `ARTESIAN_GOAL`, `ARTESIAN_RUN_ID`, `ARTESIAN_TURN`) for back-compat. Store invariants
+>    once with `artesian memory store "…" --tag invariant`; preview a packet with
+>    `artesian memory context --goal "…"`.
 > 2. **anchor** — a resume anchor is written so a crash or compaction mid-loop is recoverable.
 > 3. **verify + commit** — after the goal check, the turn's outcome is committed as a concise atom
 >    **scoped to the run** (`session` scope, `session_id = <run id>`, tagged `loop`/`turn-N`). Run

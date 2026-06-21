@@ -139,6 +139,63 @@ async fn sqlite_vec_backend_satisfies_memory_contract() {
     assert_backend_contract(&backend).await;
 }
 
+/// A tag filter is an explicit selection (e.g. always-inject project invariants), so a
+/// tag-filtered find must return the tagged record regardless of query relevance and exclude
+/// untagged records — uniformly across the lexical (files) and vector (sqlite-vec) backends.
+async fn assert_tag_filter_always_injects<B: MemoryBackend>(backend: &B) {
+    let invariant = StoreMemory {
+        content: "never delete the production database".to_string(),
+        tags: vec!["invariant".to_string()],
+        node_id: Some("node:inv".to_string()),
+        ..StoreMemory::atom("")
+    };
+    let plain = StoreMemory {
+        content: "deployments run nightly".to_string(),
+        node_id: Some("node:plain".to_string()),
+        ..StoreMemory::atom("")
+    };
+    backend.store(invariant).await.expect("store invariant");
+    backend.store(plain).await.expect("store plain");
+
+    // Query text deliberately shares no token with the invariant.
+    let mut query = MemoryQuery::new("zzz unrelated query token").with_limit(5);
+    query.tags = vec!["invariant".to_string()];
+    let hits = backend.find(query).await.expect("tag find should succeed");
+    assert!(
+        hits.iter()
+            .any(|hit| hit.record.content.contains("production database")),
+        "tag-filtered find must always return the tagged record regardless of relevance, got {hits:?}"
+    );
+    assert!(
+        !hits
+            .iter()
+            .any(|hit| hit.record.content.contains("nightly")),
+        "tag filter must exclude untagged records, got {hits:?}"
+    );
+}
+
+#[tokio::test]
+async fn files_backend_tag_filter_always_injects() {
+    let tempdir = TempDir::new("files-tag-inject");
+    assert_tag_filter_always_injects(&FilesBackend::new(tempdir.path())).await;
+}
+
+#[tokio::test]
+async fn sqlite_vec_backend_tag_filter_always_injects() {
+    let store = SqliteVecVectorStore::in_memory().expect("sqlite-vec store should open");
+    let backend = VectorMemoryBackend::with_embedder(
+        store,
+        VectorMemoryConfig {
+            collection: "tag-inject".to_string(),
+            dimensions: TEST_DIMENSIONS,
+            ..VectorMemoryConfig::new("tag-inject")
+        },
+        Arc::new(TestEmbedder),
+    )
+    .expect("backend should construct");
+    assert_tag_filter_always_injects(&backend).await;
+}
+
 #[tokio::test]
 async fn vector_collections_isolate_two_projects_on_one_store() {
     let store = SqliteVecVectorStore::in_memory().expect("sqlite-vec store should open");

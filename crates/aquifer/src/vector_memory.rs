@@ -1193,6 +1193,11 @@ fn filter_from_query(query: &MemoryQuery) -> Filter {
     if let Some(user_id) = &query.user_id {
         filter.must_eq("user_id", user_id);
     }
+    // Every requested tag must be present (AND), matching the files backend's tag filter.
+    // `must_eq` on the keyword-indexed `tags` array means "array contains the tag".
+    for tag in &query.tags {
+        filter.must_eq("tags", tag);
+    }
     filter
 }
 

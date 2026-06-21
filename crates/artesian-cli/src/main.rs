@@ -537,6 +537,10 @@ enum MemoryCommand {
         limit: usize,
         #[arg(long, default_value_t = 4000)]
         index_chars: usize,
+        /// Assemble a goal-scoped packet (goal + invariants + relevant memory) for this goal
+        /// instead of a flat index + hit list. Invariants are memories tagged `invariant`.
+        #[arg(long)]
+        goal: Option<String>,
         #[arg(long, default_value = DEFAULT_CONFIG)]
         config: PathBuf,
         #[arg(long, default_value = ".artesian")]
@@ -865,8 +869,65 @@ fn run_shell_with_env(cmd: &str, env: &[(&str, &str)]) -> Result<bool> {
     Ok(status.success())
 }
 
+/// Run a shell command, capturing combined stdout+stderr so a failing verifier's detail can be
+/// surfaced as the "last failed check" in the next turn's goal packet.
+fn run_shell_capture(cmd: &str) -> Result<(bool, String)> {
+    let output = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(cmd)
+        .output()
+        .with_context(|| format!("run command: {cmd}"))?;
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&output.stderr));
+    Ok((output.status.success(), text.trim().to_string()))
+}
+
 /// Per-turn recall limit injected into the worker (kept small to stay token-cheap).
 const LOOP_RECALL_LIMIT: usize = 5;
+/// Tag that marks a memory as a project invariant — always injected into the goal packet.
+const INVARIANT_TAG: &str = "invariant";
+/// Cap on invariants injected into a goal packet (ranked by goal relevance).
+const GOAL_INVARIANT_LIMIT: usize = 8;
+/// Cap on the captured "last failed check" detail carried into the next turn.
+const LAST_CHECK_CHARS: usize = 800;
+
+/// Assemble a bounded, goal-scoped context packet — the goal, the invariants that must hold, the
+/// last failed verifier check, and the most relevant memory — rather than a flat recall dump. This
+/// is the "hand the agent just the goal, invariants, and last failed check" packet.
+async fn assemble_goal_packet(
+    backend: Option<&dyn MemoryBackend>,
+    goal: &str,
+    last_check: Option<&str>,
+    recall: &str,
+) -> String {
+    let mut sections = vec![format!("# Goal\n{goal}")];
+
+    if let Some(backend) = backend {
+        // Invariants: always injected (tag-filtered), ranked by goal relevance.
+        let mut query = MemoryQuery::new(goal).with_limit(GOAL_INVARIANT_LIMIT);
+        query.tags = vec![INVARIANT_TAG.to_string()];
+        if let Ok(hits) = backend.find(query).await {
+            if !hits.is_empty() {
+                let lines: Vec<String> = hits
+                    .iter()
+                    .map(|hit| format!("- {}", hit.record.content.replace('\n', " ")))
+                    .collect();
+                sections.push(format!("# Invariants (must hold)\n{}", lines.join("\n")));
+            }
+        }
+    }
+
+    if let Some(last_check) = last_check.filter(|check| !check.is_empty()) {
+        let detail: String = last_check.chars().take(LAST_CHECK_CHARS).collect();
+        sections.push(format!("# Last failed check\n{detail}"));
+    }
+
+    if !recall.is_empty() {
+        sections.push(format!("# Relevant memory\n{recall}"));
+    }
+
+    sections.join("\n\n")
+}
 
 /// Search the backend for memory relevant to the goal and render a compact recall block.
 async fn loop_recall(backend: &dyn MemoryBackend, goal: &str) -> String {
@@ -926,11 +987,12 @@ async fn run_loop(
     let anchor_store = AnchorAnchorStore::new(&root);
     // Use the project's configured memory backend when present; otherwise a local files backend
     // under the loop root. Recall/commit degrade to a no-op if the backend cannot be opened.
+    // No-config fallback: a files backend rooted at `--root`, the same memory root the other
+    // `memory` subcommands use for that root, so invariants stored via `memory store` are visible.
     let memory_config = load_config(&config)
         .map(|cfg| cfg.memory)
         .unwrap_or_else(|_| {
-            ArtesianConfig::memory_files(root.join("memory").display().to_string(), Vec::new())
-                .memory
+            ArtesianConfig::memory_files(root.display().to_string(), Vec::new()).memory
         });
     let backend = match open_memory_backend(&memory_config) {
         Ok(backend) => Some(backend),
@@ -951,19 +1013,25 @@ async fn run_loop(
         println!("✓ goal already holds (0 turns)");
         return Ok(());
     }
+    let mut last_check: Option<String> = None;
     for turn in 1..=max_turns {
         let recall = match &backend {
             Some(backend) => loop_recall(backend.as_ref(), &goal).await,
             None => String::new(),
         };
+        // Goal-scoped packet: goal + invariants + last failed check + relevant memory — what the
+        // worker actually needs, not a flat recall dump.
+        let packet =
+            assemble_goal_packet(backend.as_deref(), &goal, last_check.as_deref(), &recall).await;
         if !recall.is_empty() {
-            println!("  recall ({} relevant):\n{recall}", recall.lines().count());
+            println!("  recall ({} relevant)", recall.lines().count());
         }
         if poll {
             tokio::time::sleep(Duration::from_millis(500)).await;
         } else if let Some(cmd) = &worker_cmd {
             println!("── turn {turn}/{max_turns}: worker ─ {cmd}");
             let env = [
+                ("ARTESIAN_PACKET", packet.as_str()),
                 ("ARTESIAN_RECALL", recall.as_str()),
                 ("ARTESIAN_GOAL", goal.as_str()),
                 ("ARTESIAN_RUN_ID", run_id.as_str()),
@@ -982,7 +1050,13 @@ async fn run_loop(
                 format!("verify goal: {goal}"),
             ))
             .await;
-        let goal_met = run_shell(&goal)?;
+        let (goal_met, check_output) = run_shell_capture(&goal)?;
+        // Carry the verifier's failure detail into the next turn's packet (cleared on success).
+        last_check = if goal_met {
+            None
+        } else {
+            Some(format!("turn {turn}: `{goal}` failed\n{check_output}"))
+        };
         if let Some(backend) = &backend {
             loop_commit_turn(
                 backend.as_ref(),
@@ -1668,6 +1742,7 @@ async fn memory(command: MemoryCommand) -> Result<()> {
             query,
             limit,
             index_chars,
+            goal,
             config,
             root,
             backend,
@@ -1675,6 +1750,15 @@ async fn memory(command: MemoryCommand) -> Result<()> {
             let memory_config = memory_config_for_command(&config, root, backend)?;
             let index = read_index_slice(&memory_config.root, index_chars)?;
             let backend = open_memory_backend(&memory_config)?;
+            // `--goal` returns the bounded goal packet (goal + invariants + relevant memory);
+            // otherwise the flat index + hit list.
+            if let Some(goal) = goal {
+                let recall = loop_recall(backend.as_ref(), &goal).await;
+                let packet =
+                    assemble_goal_packet(Some(backend.as_ref()), &goal, None, &recall).await;
+                println!("{packet}");
+                return Ok(());
+            }
             let hits = backend
                 .find(MemoryQuery::new(query).with_limit(limit))
                 .await?;

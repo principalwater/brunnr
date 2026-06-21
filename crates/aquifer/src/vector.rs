@@ -294,13 +294,14 @@ pub(crate) fn payload_matches_filter(payload: &Value, filter: &Filter) -> bool {
 
 fn payload_matches_condition(payload: &Value, condition: &FilterCondition) -> bool {
     match condition {
-        FilterCondition::Eq { field, value } => field_value(payload, field)
-            .is_some_and(|candidate| filter_values_equal(candidate, value)),
+        FilterCondition::Eq { field, value } => {
+            field_value(payload, field).is_some_and(|candidate| value_matches(candidate, value))
+        }
         FilterCondition::In { field, values } => {
             field_value(payload, field).is_some_and(|candidate| {
                 values
                     .iter()
-                    .any(|expected| filter_values_equal(candidate, expected))
+                    .any(|expected| value_matches(candidate, expected))
             })
         }
         FilterCondition::Range(range) => field_value(payload, &range.field)
@@ -316,6 +317,16 @@ fn field_value<'a>(payload: &'a Value, field: &str) -> Option<&'a Value> {
         value = value.get(part)?;
     }
     Some(value)
+}
+
+/// Match a payload value against an expected scalar. When the payload value is an array
+/// (e.g. the `tags` field), this is "array contains expected" — mirroring Qdrant keyword-array
+/// match semantics, so an `Eq`/`In` filter on `tags` behaves identically across backends.
+fn value_matches(candidate: &Value, expected: &FilterValue) -> bool {
+    if let Some(array) = candidate.as_array() {
+        return array.iter().any(|item| filter_values_equal(item, expected));
+    }
+    filter_values_equal(candidate, expected)
 }
 
 fn filter_values_equal(candidate: &Value, expected: &FilterValue) -> bool {

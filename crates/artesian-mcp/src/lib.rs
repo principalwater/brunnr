@@ -381,12 +381,18 @@ pub struct ContextRequest {
     pub session_id: Option<String>,
     pub task_id: Option<String>,
     pub user_id: Option<String>,
+    /// When set, also return the project invariants relevant to this goal (memories tagged
+    /// `invariant`), so the caller can assemble a goal-scoped packet rather than a flat dump.
+    pub goal: Option<String>,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct ContextResponse {
     pub index: Option<String>,
     pub hits: Vec<FindHit>,
+    /// Invariants relevant to `goal` (empty unless `goal` was provided).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub invariants: Vec<FindHit>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -827,7 +833,32 @@ impl MemoryServer {
                 tags: hit.record.tags,
             })
             .collect();
-        Ok(Json(ContextResponse { index, hits }))
+        // When a goal is given, also surface the invariants relevant to it (tag-filtered), so the
+        // caller can assemble a goal-scoped packet — goal + invariants + relevant memory.
+        let mut invariants = Vec::new();
+        if let Some(goal) = request.goal {
+            let mut invariant_query = MemoryQuery::new(goal).with_limit(8);
+            invariant_query.tags = vec!["invariant".to_string()];
+            invariants = self
+                .backend
+                .find(invariant_query)
+                .await
+                .map_err(|error| ErrorData::internal_error(error.to_string(), None))?
+                .into_iter()
+                .map(|hit| FindHit {
+                    id: hit.record.id.to_string(),
+                    node_id: hit.record.node_id,
+                    content: hit.record.content,
+                    score: hit.score,
+                    tags: hit.record.tags,
+                })
+                .collect();
+        }
+        Ok(Json(ContextResponse {
+            index,
+            hits,
+            invariants,
+        }))
     }
 
     #[tool(

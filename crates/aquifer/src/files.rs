@@ -107,7 +107,9 @@ impl MemoryBackend for FilesBackend {
                 .filter(|record| matches_node_filter(record, query.node_id.as_deref()))
                 .filter(|record| matches_tags(record, &query.tags))
                 .filter(|record| matches_tenancy(record, &query))
-                .filter_map(|record| score_record(record, &terms))
+                // A tag filter is an explicit selection (e.g. always-inject invariants), so keep
+                // tag-matched records even with zero term overlap — relevance-ordered, not dropped.
+                .filter_map(|record| score_record(record, &terms, !query.tags.is_empty()))
                 .collect::<Vec<_>>();
 
             hits.sort_by(|left, right| {
@@ -467,7 +469,7 @@ fn matches_tenancy(record: &MemoryRecord, query: &MemoryQuery) -> bool {
             .is_none_or(|user_id| record.user_id.as_ref() == Some(user_id))
 }
 
-fn score_record(record: MemoryRecord, terms: &[String]) -> Option<SearchHit> {
+fn score_record(record: MemoryRecord, terms: &[String], keep_zero: bool) -> Option<SearchHit> {
     if terms.is_empty() {
         return Some(SearchHit {
             record,
@@ -492,7 +494,7 @@ fn score_record(record: MemoryRecord, terms: &[String]) -> Option<SearchHit> {
         .iter()
         .map(|term| haystack.matches(term).count() as f32)
         .sum::<f32>();
-    (score > 0.0).then_some(SearchHit {
+    (score > 0.0 || keep_zero).then_some(SearchHit {
         record,
         score,
         source: SearchSource::Keyword,
