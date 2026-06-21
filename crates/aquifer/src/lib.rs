@@ -12,6 +12,7 @@ pub mod episode;
 mod files;
 mod identity;
 mod lane_lock;
+mod mmr;
 #[cfg(feature = "pgvector")]
 mod pgvector;
 #[cfg(feature = "qdrant")]
@@ -43,6 +44,7 @@ pub use episode::EpisodeIndex;
 pub use files::FilesBackend;
 pub use identity::stable_memory_id;
 pub use lane_lock::{SessionLaneGuard, SessionLaneLock};
+pub use mmr::{mmr_diversify, MMR_DEFAULT_LAMBDA};
 #[cfg(feature = "pgvector")]
 pub use pgvector::{PgVectorBackend, PgVectorStore};
 #[cfg(feature = "qdrant")]

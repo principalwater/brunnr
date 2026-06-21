@@ -524,6 +524,13 @@ enum MemoryCommand {
         task_id: Option<String>,
         #[arg(long)]
         user_id: Option<String>,
+        /// Diversify results with Maximal Marginal Relevance to drop near-duplicates (fetches a
+        /// larger pool, then re-ranks to --limit).
+        #[arg(long)]
+        mmr: bool,
+        /// MMR relevance/novelty trade-off in [0,1] (1 = pure relevance). Implies --mmr.
+        #[arg(long)]
+        mmr_lambda: Option<f32>,
         #[arg(long, default_value = DEFAULT_CONFIG)]
         config: PathBuf,
         #[arg(long, default_value = ".artesian")]
@@ -991,13 +998,16 @@ async fn assemble_goal_packet(
 }
 
 /// Search the backend for memory relevant to the goal and render a compact recall block.
+/// MMR-diversifies a larger pool down to the limit so near-duplicate turn commits do not crowd out
+/// distinct context.
 async fn loop_recall(backend: &dyn MemoryBackend, goal: &str) -> String {
     let Ok(hits) = backend
-        .find(MemoryQuery::new(goal).with_limit(LOOP_RECALL_LIMIT))
+        .find(MemoryQuery::new(goal).with_limit(LOOP_RECALL_LIMIT * 3))
         .await
     else {
         return String::new();
     };
+    let hits = aquifer::mmr_diversify(hits, LOOP_RECALL_LIMIT, aquifer::MMR_DEFAULT_LAMBDA);
     let mut lines = Vec::new();
     for hit in hits {
         let content = hit.record.content.replace('\n', " ");
@@ -1871,19 +1881,36 @@ async fn memory(command: MemoryCommand) -> Result<()> {
             session_id,
             task_id,
             user_id,
+            mmr,
+            mmr_lambda,
             config,
             root,
             backend,
         } => {
             let backend = open_backend_for_command(&config, root, backend)?;
-            let mut memory_query = MemoryQuery::new(query).with_limit(limit);
+            let diversify = mmr || mmr_lambda.is_some();
+            // For MMR, fetch a larger pool so the re-rank has duplicates to shed.
+            let fetch_limit = if diversify {
+                limit.saturating_mul(3).max(limit)
+            } else {
+                limit
+            };
+            let mut memory_query = MemoryQuery::new(query).with_limit(fetch_limit);
             memory_query.node_id = node_id;
             memory_query.scope = scope.map(Into::into);
             memory_query.agent_id = agent_id;
             memory_query.session_id = session_id;
             memory_query.task_id = task_id;
             memory_query.user_id = user_id;
-            for hit in backend.find(memory_query).await? {
+            let mut hits = backend.find(memory_query).await?;
+            if diversify {
+                hits = aquifer::mmr_diversify(
+                    hits,
+                    limit,
+                    mmr_lambda.unwrap_or(aquifer::MMR_DEFAULT_LAMBDA),
+                );
+            }
+            for hit in hits {
                 println!(
                     "{:.4}\t{}\t{}\t{}",
                     hit.score, hit.record.id, hit.record.node_id, hit.record.content
