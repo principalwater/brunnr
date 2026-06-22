@@ -91,9 +91,10 @@ For a single bounded subtask you do not need a flume — `orchestrate.delegate(w
 worker under the judge gate.
 
 > **`artesian loop` (available now).** A convenience command drives this cycle directly — it repeats
-> the worker action until the goal command exits 0 (the verifier gate), bounded by `--max-turns`:
+> the worker action until the goal command exits 0 (the verifier gate), bounded by `--max-turns`
+> and optionally `--max-wall-secs`:
 >
-> `artesian loop --goal "cargo test" --worker-cmd "codex exec 'fix the failing tests'" --max-turns 10`
+> `artesian loop --goal "cargo test" --worker-cmd "codex exec 'fix the failing tests'" --max-turns 10 --max-wall-secs 3600`
 >
 > Each turn is memory-first end to end:
 >
@@ -110,11 +111,17 @@ worker under the judge gate.
 >    **scoped to the run** (`session` scope, `session_id = <run id>`, tagged `loop`/`turn-N`). Run
 >    scoping keeps the working trail out of your durable memory and lets a later sweep reclaim it by
 >    run id, so loops never clog the store.
-> 4. **verified skill** — on success, the worker approach is stored as a durable, **verified** skill
->    (tagged `skill`) — admitted only because the goal verifier just passed (verify-before-store). A
->    later run of the same or a similar goal surfaces it in the packet's **Known approach (verified)**
->    section, so the agent reuses a known-good solution; the goal verifier still gates each turn, so a
->    stale skill simply falls back to a fresh attempt.
+> 4. **brakes + observability** — before each turn the loop checks `~/.artesian/STOP` and exits
+>    non-zero if it exists. Override that path with `ARTESIAN_STOP_FILE`. Each run writes JSONL to
+>    `~/.artesian/runs/<run id>.jsonl` (override the directory with `ARTESIAN_RUNS_DIR`): one line per
+>    turn plus a final summary with the outcome, elapsed time, and stop reason.
+> 5. **verified skill + spec** — on success, the worker approach is stored as a durable,
+>    **verified** skill (tagged `skill`) and a sharpened verifier-backed spec (tagged `spec`). A
+>    later run of the same or a similar goal surfaces them in the packet's **Known approach
+>    (verified)** and **Sharper specs (verified)** sections. If a failed check is later corrected,
+>    the loop stores a short de-duplicated auto-invariant (tagged `invariant`) so future packets carry
+>    the learned constraint. The goal verifier still gates each turn, so stale learning falls back to
+>    a fresh attempt. Use `--no-learn` to disable these durable learning writes for a run.
 >
 > The worker is any shell command — a script or an agent CLI (`codex exec`, `claude -p`, …), so you
 > can drive a different model per loop. `--config` selects the project's memory backend for

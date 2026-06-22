@@ -239,6 +239,71 @@ fn cli_handoff_and_session_list_read_committed_session() {
     assert_eq!(summaries[0]["key"]["session_id"], "session-cli");
 }
 
+#[test]
+fn cli_loop_max_wall_secs_exits_nonzero() {
+    let tempdir = TempDir::new("cli-loop-wall-cap");
+    let home = tempdir.join("home");
+    let runs = tempdir.join("runs");
+    let binary = env!("CARGO_BIN_EXE_artesian");
+
+    let output = Command::new(binary)
+        .arg("loop")
+        .arg("--goal")
+        .arg("false")
+        .arg("--poll")
+        .arg("--max-turns")
+        .arg("2")
+        .arg("--max-wall-secs")
+        .arg("0")
+        .arg("--root")
+        .arg(tempdir.join(".artesian"))
+        .env("ARTESIAN_HOME", &home)
+        .env("ARTESIAN_RUNS_DIR", &runs)
+        .env("ARTESIAN_STOP_FILE", tempdir.join("STOP"))
+        .current_dir(tempdir.path())
+        .output()
+        .expect("loop should run");
+
+    assert!(!output.status.success(), "loop should fail on wall cap");
+    assert!(stderr(&output).contains("max-wall-secs"));
+    let logs: Vec<_> = std::fs::read_dir(&runs)
+        .expect("run-log dir should exist")
+        .collect();
+    assert_eq!(logs.len(), 1);
+}
+
+#[test]
+fn cli_loop_stop_sentinel_exits_nonzero() {
+    let tempdir = TempDir::new("cli-loop-stop");
+    let home = tempdir.join("home");
+    let runs = tempdir.join("runs");
+    let stop = tempdir.join("STOP");
+    std::fs::write(&stop, "stop").expect("stop sentinel should be written");
+    let binary = env!("CARGO_BIN_EXE_artesian");
+
+    let output = Command::new(binary)
+        .arg("loop")
+        .arg("--goal")
+        .arg("false")
+        .arg("--poll")
+        .arg("--max-turns")
+        .arg("2")
+        .arg("--root")
+        .arg(tempdir.join(".artesian"))
+        .env("ARTESIAN_HOME", &home)
+        .env("ARTESIAN_RUNS_DIR", &runs)
+        .env("ARTESIAN_STOP_FILE", &stop)
+        .current_dir(tempdir.path())
+        .output()
+        .expect("loop should run");
+
+    assert!(
+        !output.status.success(),
+        "loop should fail on STOP sentinel"
+    );
+    assert!(stderr(&output).contains("stopped by sentinel"));
+}
+
 fn stdout(output: &std::process::Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }

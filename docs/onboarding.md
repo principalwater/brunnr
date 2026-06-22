@@ -77,7 +77,11 @@ After `init`/`onboard`, every task can ride the same memory:
 # outcome is committed run-scoped so it never clogs durable memory.
 artesian loop --goal "cargo test" \
   --worker-cmd "codex exec 'fix the failing tests, using $ARTESIAN_RECALL'" \
-  --max-turns 10
+  --max-turns 10 \
+  --max-wall-secs 3600
+
+# Emergency stop: create ~/.artesian/STOP (or set ARTESIAN_STOP_FILE to another
+# path). Run logs are JSONL under ~/.artesian/runs/ unless ARTESIAN_RUNS_DIR is set.
 
 # Reclaim any orphaned / runaway / hung teammate processes (also runs
 # automatically before each new spawn). Over MCP: the team.gc tool.
