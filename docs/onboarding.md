@@ -118,7 +118,8 @@ inherits the same chunk-on-store, hybrid RRF, and tenancy. See
 [backends.md](backends.md#adding-a-vector-backend-the-vectorstore-adapter-pattern).
 
 See [modes.md](modes.md), [memory.md](memory.md), [concurrency.md](concurrency.md),
-[teams.md](teams.md), [backends.md](backends.md), [upgrades.md](upgrades.md).
+[teams.md](teams.md), [backends.md](backends.md), [upgrades.md](upgrades.md),
+[sizing-and-deployment.md](sizing-and-deployment.md).
 
 ---
 
@@ -225,21 +226,35 @@ Steps:
    artesian memory find "a topic from the notes" --limit 5
    artesian doctor
 
-6) Wire agents. The MCP server `artesian-memory` is now registered (tools: memory.find /
-   memory.context / memory.store / memory.anchor.*). Append this block to the project's AGENTS.md
-   and/or CLAUDE.md (append, do not overwrite):
+6) Wire agents and retire the old Markdown workflow. The `artesian-memory` MCP server is now
+   registered at USER scope for Claude Code, Codex, and Zed (tools: memory.find / memory.context /
+   memory.store / memory.anchor.*). With the operator's permission (or, if none is specified, in
+   every AGENTS.md / CLAUDE.md you judge relevant), update those files so memory work goes through
+   Artesian and the Markdown notes become a reference archive, not the mandatory workflow:
 
-   ## Memory — Artesian
-   This project uses the `artesian-memory` MCP server for durable, cross-session memory.
-   - Before non-trivial work, recall the relevant slice with `memory.context` (or `memory.find`) —
-     do not re-read whole files.
-   - For a goal/task, call `memory.context` with the goal to get a bounded packet: the goal, the
-     invariants that must hold, the last failed check, and the most relevant memory.
-   - After a durable decision or learning, `memory.store` it (concise, reusable).
-   - Record project rules once with tag `invariant` — they are always injected into goal packets.
+   a) Insert this block ABOVE any older memory/notes rules, so it is the primary instruction the
+      agent reads first:
 
-   (Claude Code reads .mcp.json per project — copy it into each project root if needed; Codex and Zed
-   pick up the global registration automatically.)
+      ## Memory — Artesian (primary)
+      This project uses the `artesian-memory` MCP server for durable, cross-session memory and task
+      state. Do all memory/context work through it; the Markdown notes below are LEGACY reference
+      only, not a workflow you must maintain.
+      - Before non-trivial work, recall the relevant slice with `memory.context` (or `memory.find`)
+        — do not re-read whole files.
+      - For a goal/task, call `memory.context` with the goal to get a bounded packet (the goal, the
+        invariants that must hold, the last failed check, and the most relevant memory).
+      - After a durable decision or learning, `memory.store` it (concise, reusable). Record durable
+        project rules once with tag `invariant` — they are always injected into goal packets.
+      - Track task lifecycle (done / blocked / handoff / decisions) in Artesian, not in Markdown.
+
+   b) Demote any pre-existing MANDATORY Markdown rules that sit above this block (e.g. "always read
+      STATUS.md / handoff.md / memory/*.md first", "record decisions in decisions.md"): rewrite them
+      as "legacy / historical reference" and drop the "mandatory" / "always" framing, so agents stop
+      maintaining memory in Markdown in parallel. Do NOT delete the Markdown files — they remain an
+      archive; only their authority changes.
+
+   (Registration is user-scoped, so all three agents pick it up automatically; the project
+   `.mcp.json` is an extra per-project copy for repos that prefer it.)
 
 7) Report: what was installed, the collection, how many records were imported per directory, that
    the MCP server is registered, and where to paste the memory block.
