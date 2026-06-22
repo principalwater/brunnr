@@ -49,6 +49,10 @@ fn cli_memory_mode_round_trip_and_spawn_alias_work() {
             "smoke",
             "--node-id",
             "node:cli",
+            "--source",
+            "cli-test",
+            "--confidence",
+            "0.75",
         ])
         .current_dir(tempdir.path())
         .output()
@@ -61,7 +65,31 @@ fn cli_memory_mode_round_trip_and_spawn_alias_work() {
         .output()
         .expect("find should run");
     assert!(find.status.success(), "{}", stderr(&find));
-    assert!(stdout(&find).contains("node:cli\tArtesian memory mode works"));
+    let find_out = stdout(&find);
+    assert!(find_out.contains("node:cli\tArtesian memory mode works"));
+    assert!(find_out.contains("source=cli-test"));
+    assert!(find_out.contains("confidence=0.75"));
+
+    let answer = Command::new(binary)
+        .args([
+            "memory",
+            "answer",
+            "What memory mode works?",
+            "--limit",
+            "1",
+        ])
+        .current_dir(tempdir.path())
+        .output()
+        .expect("answer should run");
+    assert!(answer.status.success(), "{}", stderr(&answer));
+    let answer_json: serde_json::Value =
+        serde_json::from_str(&stdout(&answer)).expect("answer should be JSON");
+    assert_eq!(answer_json["extractive"], true);
+    assert_eq!(answer_json["sources"][0], "node:cli");
+    assert!(answer_json["answer"]
+        .as_str()
+        .expect("answer should be a string")
+        .contains("[node:cli]"));
 
     let commit = Command::new(binary)
         .args(["memory", "commit", "memory works", "--budget-tokens", "256"])

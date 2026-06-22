@@ -62,6 +62,7 @@ impl MemoryBackend for MockMemoryBackend {
     fn store(&self, memory: StoreMemory) -> BoxFuture<'_, MemoryResult<MemoryRecord>> {
         let records = Arc::clone(&self.records);
         async move {
+            memory.validate_confidence()?;
             let mut records = records.lock().expect("records lock should not be poisoned");
             if let Some(existing) = records.iter().find(|record| {
                 record.content == memory.content
@@ -71,6 +72,8 @@ impl MemoryBackend for MockMemoryBackend {
                     && record.session_id == memory.session_id
                     && record.task_id == memory.task_id
                     && record.user_id == memory.user_id
+                    && record.source == memory.source
+                    && record.confidence == memory.confidence
             }) {
                 return Ok(existing.clone());
             }
@@ -90,6 +93,8 @@ impl MemoryBackend for MockMemoryBackend {
             record.session_id = memory.session_id;
             record.task_id = memory.task_id;
             record.user_id = memory.user_id;
+            record.source = memory.source;
+            record.confidence = memory.confidence;
             records.push(record.clone());
             Ok(record)
         }
@@ -197,6 +202,69 @@ async fn sqlite_vec_backend_tag_filter_always_injects() {
 }
 
 #[tokio::test]
+async fn files_backend_round_trips_source_and_confidence() {
+    let tempdir = TempDir::new("files-provenance");
+    assert_provenance_round_trip(&FilesBackend::new(tempdir.path())).await;
+}
+
+#[tokio::test]
+async fn sqlite_vec_backend_round_trips_source_and_confidence() {
+    let store = SqliteVecVectorStore::in_memory().expect("sqlite-vec store should open");
+    let backend = VectorMemoryBackend::with_embedder(
+        store,
+        VectorMemoryConfig {
+            collection: "provenance".to_string(),
+            dimensions: TEST_DIMENSIONS,
+            ..VectorMemoryConfig::new("provenance")
+        },
+        Arc::new(TestEmbedder),
+    )
+    .expect("backend should construct");
+    assert_provenance_round_trip(&backend).await;
+}
+
+async fn assert_provenance_round_trip<B: MemoryBackend>(backend: &B) {
+    let stored = backend
+        .store(StoreMemory {
+            content: "provenance round trip memory".to_string(),
+            tags: vec!["provenance".to_string()],
+            metadata: BTreeMap::new(),
+            tier: MemoryTier::L1Atom,
+            node_id: Some("node:provenance".to_string()),
+            created_at: None,
+            scope: None,
+            agent_id: None,
+            session_id: None,
+            task_id: None,
+            user_id: None,
+            source: Some("docs/provenance.md".to_string()),
+            confidence: Some(0.82),
+        })
+        .await
+        .expect("store should succeed");
+    assert_eq!(stored.source.as_deref(), Some("docs/provenance.md"));
+    assert_eq!(stored.confidence, Some(0.82));
+
+    let hit = backend
+        .find(MemoryQuery::new("provenance").with_limit(3))
+        .await
+        .expect("find should succeed")
+        .into_iter()
+        .find(|hit| hit.record.node_id == "node:provenance")
+        .expect("provenance record should be found");
+    assert_eq!(hit.record.source.as_deref(), Some("docs/provenance.md"));
+    assert_eq!(hit.record.confidence, Some(0.82));
+
+    let drill_down = backend
+        .get_node("node:provenance")
+        .await
+        .expect("get_node should succeed")
+        .expect("node should exist");
+    assert_eq!(drill_down.source.as_deref(), Some("docs/provenance.md"));
+    assert_eq!(drill_down.confidence, Some(0.82));
+}
+
+#[tokio::test]
 async fn vector_collections_isolate_two_projects_on_one_store() {
     let store = SqliteVecVectorStore::in_memory().expect("sqlite-vec store should open");
     let project_a = VectorMemoryBackend::with_embedder(
@@ -233,6 +301,8 @@ async fn vector_collections_isolate_two_projects_on_one_store() {
             session_id: None,
             task_id: None,
             user_id: Some("user-a".to_string()),
+            source: None,
+            confidence: None,
         })
         .await
         .expect("project A store should succeed");
@@ -249,6 +319,8 @@ async fn vector_collections_isolate_two_projects_on_one_store() {
             session_id: None,
             task_id: None,
             user_id: Some("user-b".to_string()),
+            source: None,
+            confidence: None,
         })
         .await
         .expect("project B store should succeed");
@@ -282,6 +354,8 @@ async fn assert_backend_contract<B: MemoryBackend>(backend: &B) {
             session_id: None,
             task_id: None,
             user_id: None,
+            source: None,
+            confidence: None,
         })
         .await
         .expect("store should succeed");
@@ -299,6 +373,8 @@ async fn assert_backend_contract<B: MemoryBackend>(backend: &B) {
             session_id: None,
             task_id: None,
             user_id: None,
+            source: None,
+            confidence: None,
         })
         .await
         .expect("store should succeed");
@@ -346,6 +422,8 @@ async fn assert_backend_contract<B: MemoryBackend>(backend: &B) {
             session_id: None,
             task_id: Some("task-a".to_string()),
             user_id: None,
+            source: None,
+            confidence: None,
         })
         .await
         .expect("tenant store should succeed");
@@ -362,6 +440,8 @@ async fn assert_backend_contract<B: MemoryBackend>(backend: &B) {
             session_id: None,
             task_id: Some("task-b".to_string()),
             user_id: None,
+            source: None,
+            confidence: None,
         })
         .await
         .expect("tenant store should succeed");
@@ -445,6 +525,8 @@ async fn large_content_is_chunked_so_recall_stays_bounded() {
             session_id: None,
             task_id: None,
             user_id: None,
+            source: None,
+            confidence: None,
         })
         .await
         .expect("store should succeed");
@@ -543,6 +625,8 @@ async fn single_chunk_records_are_unaffected_by_small_to_big() {
                 session_id: None,
                 task_id: None,
                 user_id: None,
+                source: None,
+                confidence: None,
             })
             .await
             .expect("store should succeed");

@@ -594,6 +594,8 @@ impl<V: VectorStore> VectorMemoryBackend<V> {
                 session_id,
                 task_id,
                 user_id,
+                source: provenance_source,
+                confidence,
                 mut metadata,
                 ..
             } = record;
@@ -622,6 +624,8 @@ impl<V: VectorStore> VectorMemoryBackend<V> {
                     session_id,
                     task_id,
                     user_id,
+                    source: provenance_source,
+                    confidence,
                 },
             });
         }
@@ -867,6 +871,7 @@ impl<V: VectorStore> MemoryBackend for VectorMemoryBackend<V> {
 
     fn store(&self, memory: StoreMemory) -> BoxFuture<'_, MemoryResult<MemoryRecord>> {
         async move {
+            memory.validate_confidence()?;
             let _lane_guard = SessionLaneLock::default_rooted()
                 .acquire(&self.config.collection, memory.session_id.as_deref())
                 .await?;
@@ -920,6 +925,8 @@ impl<V: VectorStore> MemoryBackend for VectorMemoryBackend<V> {
                     session_id: memory.session_id.clone(),
                     task_id: memory.task_id.clone(),
                     user_id: memory.user_id.clone(),
+                    source: memory.source.clone(),
+                    confidence: memory.confidence,
                 };
                 // Single-chunk content keeps the original id (= stable id of the whole
                 // memory) so existing idempotency/dedup is unchanged; multi-chunk records
@@ -949,6 +956,8 @@ impl<V: VectorStore> MemoryBackend for VectorMemoryBackend<V> {
                     session_id: memory.session_id.clone(),
                     task_id: memory.task_id.clone(),
                     user_id: memory.user_id.clone(),
+                    source: memory.source.clone(),
+                    confidence: memory.confidence,
                 };
                 let vector = self.embedder.embed_passage(&record.content)?;
                 self.store
@@ -1087,6 +1096,8 @@ fn reconstruct_parent_record(parent_node: &str, siblings: Vec<MemoryRecord>) -> 
         session_id: first.session_id.clone(),
         task_id: first.task_id.clone(),
         user_id: first.user_id.clone(),
+        source: first.source.clone(),
+        confidence: first.confidence,
     }
 }
 
@@ -1109,6 +1120,10 @@ struct MemoryPayload {
     task_id: Option<String>,
     #[serde(default)]
     user_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    confidence: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1146,6 +1161,8 @@ impl From<&MemoryRecord> for MemoryPayload {
             session_id: record.session_id.clone(),
             task_id: record.task_id.clone(),
             user_id: record.user_id.clone(),
+            source: record.source.clone(),
+            confidence: record.confidence,
         }
     }
 }
@@ -1165,6 +1182,8 @@ impl From<MemoryPayload> for MemoryRecord {
             session_id: payload.session_id,
             task_id: payload.task_id,
             user_id: payload.user_id,
+            source: payload.source,
+            confidence: payload.confidence,
         }
     }
 }
@@ -1248,6 +1267,28 @@ mod tests {
         let mut acc = "the quick brown fox".to_string();
         append_with_overlap(&mut acc, "brown fox jumps over", 16);
         assert_eq!(acc, "the quick brown fox jumps over");
+    }
+
+    #[test]
+    fn memory_payload_without_provenance_defaults_to_none() {
+        let point = VectorPoint {
+            id: "legacy".to_string(),
+            vector: Vec::new(),
+            payload: serde_json::json!({
+                "id": "legacy",
+                "node_id": "node:legacy",
+                "content": "legacy vector payload",
+                "tags": [],
+                "metadata": {},
+                "tier": "l1-atom",
+                "created_at": Utc::now(),
+            }),
+        };
+
+        let record = point_to_record(point).expect("legacy payload should decode");
+
+        assert_eq!(record.source, None);
+        assert_eq!(record.confidence, None);
     }
 
     #[test]

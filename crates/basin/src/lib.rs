@@ -565,6 +565,8 @@ async fn dispatch_task(
             session_id: Some(session.id.clone()),
             task_id: Some(task.id.clone()),
             user_id: None,
+            source: None,
+            confidence: None,
         })
         .await?;
 

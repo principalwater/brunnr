@@ -88,6 +88,8 @@ async fn sqlite_vec_multi_writer_integrity_and_tenant_isolation() {
                     session_id: Some(format!("session-{}", index % 4)),
                     task_id: Some(format!("task-{index}")),
                     user_id: Some(format!("user-{}", index % 2)),
+                    source: None,
+                    confidence: None,
                 })
                 .await
         }));
@@ -136,6 +138,8 @@ async fn assert_concurrent_scope_isolation(backend: Arc<dyn MemoryBackend>) {
                     session_id: None,
                     task_id: Some(format!("task-{index}")),
                     user_id: None,
+                    source: None,
+                    confidence: None,
                 })
                 .await
         }));
@@ -173,6 +177,8 @@ async fn assert_concurrent_scope_isolation(backend: Arc<dyn MemoryBackend>) {
                     session_id: None,
                     task_id: Some("task-duplicate".to_string()),
                     user_id: None,
+                    source: None,
+                    confidence: None,
                 })
                 .await
         }));
@@ -233,6 +239,8 @@ async fn transactional_memory_n_agents_m_operators_zero_corruption() {
                         session_id: None,
                         task_id: None,
                         user_id: Some(format!("operator-{op}")),
+                        source: None,
+                        confidence: None,
                     },
                     32,
                 )

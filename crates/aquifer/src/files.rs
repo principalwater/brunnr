@@ -127,6 +127,7 @@ impl MemoryBackend for FilesBackend {
 
     fn store(&self, memory: StoreMemory) -> BoxFuture<'_, MemoryResult<MemoryRecord>> {
         async move {
+            memory.validate_confidence()?;
             let collection = self.root.display().to_string();
             let _lane_guard = SessionLaneLock::default_rooted()
                 .acquire(&collection, memory.session_id.as_deref())
@@ -155,6 +156,8 @@ impl MemoryBackend for FilesBackend {
                 session_id: memory.session_id,
                 task_id: memory.task_id,
                 user_id: memory.user_id,
+                source: memory.source,
+                confidence: memory.confidence,
             };
             let path = self.record_path(&date_tag, &record.id);
             if let Some(parent) = path.parent() {
@@ -197,6 +200,10 @@ struct FileHeader {
     task_id: Option<String>,
     #[serde(default)]
     user_id: Option<String>,
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    confidence: Option<f32>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -242,6 +249,12 @@ struct OkfHeader {
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     user_id: Option<String>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source: Option<String>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    confidence: Option<f32>,
     #[serde(flatten)]
     unknown: BTreeMap<String, serde_yaml::Value>,
 }
@@ -275,6 +288,8 @@ fn render_record(record: &MemoryRecord) -> MemoryResult<String> {
         session_id: record.session_id.clone(),
         task_id: record.task_id.clone(),
         user_id: record.user_id.clone(),
+        source: record.source.clone(),
+        confidence: record.confidence,
     };
     Ok(format!(
         "---\n{}---\n\n{}\n",
@@ -299,6 +314,8 @@ fn render_okf_header(header: FileHeader) -> String {
         session_id: header.session_id,
         task_id: header.task_id,
         user_id: header.user_id,
+        source: header.source,
+        confidence: header.confidence,
         unknown: BTreeMap::new(),
     };
     serde_yaml::to_string(&okf).expect("OKF header serialization should be infallible")
@@ -336,6 +353,8 @@ pub(crate) fn parse_record(text: &str) -> MemoryResult<MemoryRecord> {
         session_id: header.session_id,
         task_id: header.task_id,
         user_id: header.user_id,
+        source: header.source,
+        confidence: header.confidence,
     })
 }
 
@@ -388,6 +407,8 @@ fn parse_okf_record(text: &str) -> MemoryResult<MemoryRecord> {
         session_id: header.session_id.clone(),
         task_id: header.task_id.clone(),
         user_id: header.user_id.clone(),
+        source: header.source.clone(),
+        confidence: header.confidence,
     };
     let id = header.id.unwrap_or_else(|| stable_memory_id(&store_memory));
     let node_id = header.node_id.unwrap_or_else(|| format!("node:{id}"));
@@ -404,6 +425,8 @@ fn parse_okf_record(text: &str) -> MemoryResult<MemoryRecord> {
         session_id: header.session_id,
         task_id: header.task_id,
         user_id: header.user_id,
+        source: header.source,
+        confidence: header.confidence,
     })
 }
 

@@ -15,7 +15,7 @@ use std::env;
 
 use aquifer::{
     AnchorAnchorStore, FilesBackend, MemoryBackend, MemoryQuery, MemoryScope, MemoryTier,
-    SessionAnchor, SqliteVecVectorStore, SqliteVecVectorStoreConfig, StoreMemory,
+    SearchHit, SessionAnchor, SqliteVecVectorStore, SqliteVecVectorStoreConfig, StoreMemory,
     VectorMemoryBackend, VectorMemoryConfig,
 };
 use artesian_core::{
@@ -25,6 +25,10 @@ use artesian_core::{
 use artesian_process_agent::{
     fallback_agent_catalog, load_or_refresh_agent_catalog, validate_binding_model, ProcessAgent,
     ProcessAgentConfig,
+};
+use flume::{
+    load_role_definitions, role_summaries, TeamCreate, TeamGcOptions, TeamMessage, TeamMessageKind,
+    TeamRuntime, TeamRuntimeConfig, TeamSpawn, TeamTaskAdd, TeamTaskClaim, TeamTaskComplete,
 };
 use headgate::{Headgate, HeadgateConfig, MemoryRecallStore, RecallStore};
 use headrace::{ClaimRequest, FilesTaskStore, NewTask, TaskStatus, TaskStore, TransitionTask};
@@ -40,10 +44,6 @@ use rmcp::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex as AsyncMutex;
-use flume::{
-    load_role_definitions, role_summaries, TeamCreate, TeamGcOptions, TeamMessage, TeamMessageKind,
-    TeamRuntime, TeamRuntimeConfig, TeamSpawn, TeamTaskAdd, TeamTaskClaim, TeamTaskComplete,
-};
 
 #[cfg(feature = "qdrant")]
 use aquifer::{QdrantVectorStore, QdrantVectorStoreConfig};
@@ -371,6 +371,23 @@ pub struct FindHit {
     pub content: String,
     pub score: f32,
     pub tags: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f32>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct AnswerRequest {
+    pub question: String,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct AnswerResponse {
+    pub answer: String,
+    pub extractive: bool,
+    pub sources: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -425,6 +442,8 @@ pub struct StoreRequest {
     pub content: String,
     pub tags: Option<Vec<String>>,
     pub node_id: Option<String>,
+    pub source: Option<String>,
+    pub confidence: Option<f32>,
     pub scope: Option<ScopeRequest>,
     pub agent_id: Option<String>,
     pub session_id: Option<String>,
@@ -456,6 +475,135 @@ impl From<ScopeRequest> for MemoryScope {
 pub struct StoreResponse {
     pub id: String,
     pub node_id: String,
+}
+
+pub async fn answer_memory(
+    backend: &dyn MemoryBackend,
+    acc: &AccConfig,
+    question: &str,
+    limit: usize,
+) -> anyhow::Result<AnswerResponse> {
+    let hits = backend
+        .find(MemoryQuery::new(question).with_limit(limit.max(1)))
+        .await?;
+    let sources = answer_sources(&hits);
+    if let Some(answer) = maybe_llm_answer(acc, question, &hits).await? {
+        return Ok(AnswerResponse {
+            answer,
+            extractive: false,
+            sources,
+        });
+    }
+    Ok(AnswerResponse {
+        answer: extractive_answer(&hits),
+        extractive: true,
+        sources,
+    })
+}
+
+fn answer_sources(hits: &[SearchHit]) -> Vec<String> {
+    let mut sources = Vec::new();
+    for hit in hits {
+        if !sources.contains(&hit.record.node_id) {
+            sources.push(hit.record.node_id.clone());
+        }
+    }
+    sources
+}
+
+fn extractive_answer(hits: &[SearchHit]) -> String {
+    if hits.is_empty() {
+        return "Extractive answer: no committed memory matched the question.".to_string();
+    }
+    let mut answer = String::from("Extractive answer from retrieved memory:");
+    for hit in hits {
+        answer.push_str(&format!(
+            "\n\n[{}]\n{}",
+            hit.record.node_id,
+            hit.record.content.trim()
+        ));
+    }
+    answer
+}
+
+#[cfg(feature = "llm")]
+async fn maybe_llm_answer(
+    acc: &AccConfig,
+    question: &str,
+    hits: &[SearchHit],
+) -> anyhow::Result<Option<String>> {
+    let Some(llm) = acc.compressor.as_ref().or(acc.judge.as_ref()) else {
+        return Ok(None);
+    };
+    if hits.is_empty() {
+        return Ok(None);
+    }
+    let client = headgate::llm_client_from_config(llm)?;
+    let answer = client
+        .complete(
+            headgate::LlmRequest::new(answer_prompt(question, hits))
+                .with_system(
+                    "You answer questions using only the supplied committed memory. Cite source node_ids.",
+                )
+                .with_temperature(0.0)
+                .with_max_tokens(400),
+        )
+        .await?
+        .trim()
+        .to_string();
+    Ok((!answer.is_empty()).then_some(answer))
+}
+
+#[cfg(not(feature = "llm"))]
+async fn maybe_llm_answer(
+    acc: &AccConfig,
+    question: &str,
+    hits: &[SearchHit],
+) -> anyhow::Result<Option<String>> {
+    let _ = (acc, question, hits);
+    Ok(None)
+}
+
+#[cfg(feature = "llm")]
+fn answer_prompt(question: &str, hits: &[SearchHit]) -> String {
+    let mut prompt = String::from(
+        "Use the grounding chunks below to answer the question concisely. \
+         Use bracket citations with node_ids, for example [node:abc]. \
+         If the grounding is insufficient, say so and cite the closest source.\n\nGrounding:\n",
+    );
+    for hit in hits {
+        prompt.push_str(&format!(
+            "\n[{}]\n{}\n",
+            hit.record.node_id,
+            hit.record.content.trim()
+        ));
+    }
+    prompt.push_str(&format!("\nQuestion: {question}\nAnswer:"));
+    prompt
+}
+
+fn validate_confidence(confidence: Option<f32>) -> Result<Option<f32>, ErrorData> {
+    if let Some(value) = confidence {
+        if !(0.0..=1.0).contains(&value) {
+            return Err(ErrorData::invalid_params(
+                format!("confidence must be within 0.0..=1.0, got {value}"),
+                None,
+            ));
+        }
+    }
+    Ok(confidence)
+}
+
+fn find_hit(hit: SearchHit) -> FindHit {
+    FindHit {
+        id: hit.record.id.to_string(),
+        node_id: hit.record.node_id,
+        content: hit.record.content,
+        score: hit.score,
+        tags: hit.record.tags,
+        source: hit.record.source,
+        confidence: hit.record.confidence,
+    }
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -787,15 +935,28 @@ impl MemoryServer {
             .await
             .map_err(|error| ErrorData::internal_error(error.to_string(), None))?
             .into_iter()
-            .map(|hit| FindHit {
-                id: hit.record.id.to_string(),
-                node_id: hit.record.node_id,
-                content: hit.record.content,
-                score: hit.score,
-                tags: hit.record.tags,
-            })
+            .map(find_hit)
             .collect();
         Ok(Json(FindResponse { hits }))
+    }
+
+    #[tool(
+        name = "memory.answer",
+        description = "Answer one question from committed project memory. Uses retrieved chunks as grounding and cites source node_ids; without a configured LLM it returns an extractive answer."
+    )]
+    pub async fn memory_answer(
+        &self,
+        Parameters(request): Parameters<AnswerRequest>,
+    ) -> Result<Json<AnswerResponse>, ErrorData> {
+        let response = answer_memory(
+            self.backend.as_ref(),
+            &self.acc,
+            &request.question,
+            request.limit.unwrap_or(10),
+        )
+        .await
+        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        Ok(Json(response))
     }
 
     #[tool(
@@ -827,13 +988,7 @@ impl MemoryServer {
             .await
             .map_err(|error| ErrorData::internal_error(error.to_string(), None))?
             .into_iter()
-            .map(|hit| FindHit {
-                id: hit.record.id.to_string(),
-                node_id: hit.record.node_id,
-                content: hit.record.content,
-                score: hit.score,
-                tags: hit.record.tags,
-            })
+            .map(find_hit)
             .collect();
         // When a goal is given, also surface the invariants relevant to it (tag-filtered), so the
         // caller can assemble a goal-scoped packet — goal + invariants + relevant memory.
@@ -847,13 +1002,7 @@ impl MemoryServer {
                 .await
                 .map_err(|error| ErrorData::internal_error(error.to_string(), None))?
                 .into_iter()
-                .map(|hit| FindHit {
-                    id: hit.record.id.to_string(),
-                    node_id: hit.record.node_id,
-                    content: hit.record.content,
-                    score: hit.score,
-                    tags: hit.record.tags,
-                })
+                .map(find_hit)
                 .collect();
         }
         Ok(Json(ContextResponse {
@@ -871,6 +1020,7 @@ impl MemoryServer {
         &self,
         Parameters(request): Parameters<StoreRequest>,
     ) -> Result<Json<StoreResponse>, ErrorData> {
+        let confidence = validate_confidence(request.confidence)?;
         let record = self
             .backend
             .store(StoreMemory {
@@ -885,6 +1035,8 @@ impl MemoryServer {
                 session_id: request.session_id,
                 task_id: request.task_id,
                 user_id: request.user_id,
+                source: request.source,
+                confidence,
             })
             .await
             .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
@@ -1339,6 +1491,8 @@ Call when the project vision or current phase changes."
                 session_id: None,
                 task_id: None,
                 user_id: None,
+                source: None,
+                confidence: None,
             })
             .await;
         Ok(Json(HandoffResponse {
@@ -1750,6 +1904,10 @@ fn tool_registry() -> &'static [RegisteredTool] {
         RegisteredTool {
             name: "memory.store",
             description: "Store durable reusable learnings in project memory.",
+        },
+        RegisteredTool {
+            name: "memory.answer",
+            description: "Answer one question from committed memory with node_id citations.",
         },
         RegisteredTool {
             name: "memory.context",

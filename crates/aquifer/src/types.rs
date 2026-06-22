@@ -22,6 +22,8 @@ pub enum MemoryError {
     Payload(#[from] serde_json::Error),
     #[error("invalid memory file: {0}")]
     InvalidFile(String),
+    #[error("confidence must be within 0.0..=1.0, got {0}")]
+    InvalidConfidence(f32),
     #[error("database error: {0}")]
     Database(String),
     #[error("backend is not available in this build: {0}")]
@@ -85,7 +87,7 @@ impl MemoryScope {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MemoryRecord {
     pub id: MemoryId,
     pub node_id: String,
@@ -104,7 +106,13 @@ pub struct MemoryRecord {
     pub task_id: Option<String>,
     #[serde(default)]
     pub user_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f32>,
 }
+
+impl Eq for MemoryRecord {}
 
 impl MemoryRecord {
     pub fn new(
@@ -128,11 +136,13 @@ impl MemoryRecord {
             session_id: None,
             task_id: None,
             user_id: None,
+            source: None,
+            confidence: None,
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StoreMemory {
     pub content: String,
     #[serde(default)]
@@ -154,7 +164,13 @@ pub struct StoreMemory {
     pub task_id: Option<String>,
     #[serde(default)]
     pub user_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f32>,
 }
+
+impl Eq for StoreMemory {}
 
 impl StoreMemory {
     pub fn atom(content: impl Into<String>) -> Self {
@@ -170,7 +186,18 @@ impl StoreMemory {
             session_id: None,
             task_id: None,
             user_id: None,
+            source: None,
+            confidence: None,
         }
+    }
+
+    pub fn validate_confidence(&self) -> MemoryResult<()> {
+        if let Some(confidence) = self.confidence {
+            if !(0.0..=1.0).contains(&confidence) {
+                return Err(MemoryError::InvalidConfidence(confidence));
+            }
+        }
+        Ok(())
     }
 }
 

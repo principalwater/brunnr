@@ -13,7 +13,7 @@ use anyhow::{bail, Context, Result};
 use aquifer::{
     consolidation_pass, default_migration_collection, export_okf_bundle, recover_after_compaction,
     verify_okf_bundle, AnchorAnchorStore, CollectionCompat, ConsolidationOptions, MemoryBackend,
-    MemoryQuery, MemoryScope, MemoryTier, MigrationPlan, SessionAnchor, StoreMemory,
+    MemoryQuery, MemoryScope, MemoryTier, MigrationPlan, SearchHit, SessionAnchor, StoreMemory,
     VectorMemoryConfig,
 };
 use artesian_core::{
@@ -24,6 +24,10 @@ use artesian_process_agent::{
     ProcessSupervisor,
 };
 use clap::{Parser, Subcommand, ValueEnum};
+use flume::{
+    load_role_definitions, role_summaries, TeamCreate, TeamGcOptions, TeamMessage, TeamMessageKind,
+    TeamRuntime, TeamRuntimeConfig, TeamSpawn, TeamTaskAdd, TeamTaskClaim, TeamTaskComplete,
+};
 use headgate::{
     count_tokens, Headgate, HeadgateConfig, LifecycleEntry, MemoryRecallStore, RecallStore,
     SnapshotEntry, WorkingContextBundle, WorkingContextSnapshot,
@@ -34,10 +38,6 @@ use headrace::{
 };
 use serde_json::{json, Value};
 use toml_edit::{value, Array, DocumentMut, Item, Table};
-use flume::{
-    load_role_definitions, role_summaries, TeamCreate, TeamGcOptions, TeamMessage, TeamMessageKind,
-    TeamRuntime, TeamRuntimeConfig, TeamSpawn, TeamTaskAdd, TeamTaskClaim, TeamTaskComplete,
-};
 
 const DEFAULT_CONFIG: &str = "artesian.toml";
 const MCP_SERVER_NAME: &str = "artesian-memory";
@@ -506,6 +506,10 @@ enum MemoryCommand {
         tags: Vec<String>,
         #[arg(long)]
         node_id: Option<String>,
+        #[arg(long)]
+        source: Option<String>,
+        #[arg(long, value_parser = parse_confidence)]
+        confidence: Option<f32>,
         #[arg(long, value_enum)]
         scope: Option<ScopeArg>,
         #[arg(long)]
@@ -516,6 +520,17 @@ enum MemoryCommand {
         task_id: Option<String>,
         #[arg(long)]
         user_id: Option<String>,
+        #[arg(long, default_value = DEFAULT_CONFIG)]
+        config: PathBuf,
+        #[arg(long, default_value = ".artesian")]
+        root: PathBuf,
+        #[arg(long, value_enum)]
+        backend: Option<BackendArg>,
+    },
+    Answer {
+        question: String,
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
         #[arg(long, default_value = DEFAULT_CONFIG)]
         config: PathBuf,
         #[arg(long, default_value = ".artesian")]
@@ -1840,7 +1855,10 @@ async fn init(options: InitOptions, _non_interactive: bool) -> Result<()> {
         fs::write(config_path, config.to_toml()?)?;
     }
     if options.register_mcp {
-        write_mcp_registrations(&env::current_dir()?.join(config_path), config.memory.backend)?;
+        write_mcp_registrations(
+            &env::current_dir()?.join(config_path),
+            config.memory.backend,
+        )?;
     }
     write_master_role_skill(&options.memory_root)?;
     println!(
@@ -2045,6 +2063,8 @@ async fn memory(command: MemoryCommand) -> Result<()> {
             content,
             tags,
             node_id,
+            source,
+            confidence,
             scope,
             agent_id,
             session_id,
@@ -2068,9 +2088,26 @@ async fn memory(command: MemoryCommand) -> Result<()> {
                     session_id,
                     task_id,
                     user_id,
+                    source,
+                    confidence,
                 })
                 .await?;
             println!("stored memory id={} node_id={}", record.id, record.node_id);
+        }
+        MemoryCommand::Answer {
+            question,
+            limit,
+            config,
+            root,
+            backend,
+        } => {
+            let acc = load_config(&config)
+                .map(|loaded| loaded.acc)
+                .unwrap_or_default();
+            let backend = open_backend_for_command(&config, root, backend)?;
+            let response =
+                artesian_mcp::answer_memory(backend.as_ref(), &acc, &question, limit).await?;
+            println!("{}", serde_json::to_string_pretty(&response)?);
         }
         MemoryCommand::Find {
             query,
@@ -2111,10 +2148,7 @@ async fn memory(command: MemoryCommand) -> Result<()> {
                 );
             }
             for hit in hits {
-                println!(
-                    "{:.4}\t{}\t{}\t{}",
-                    hit.score, hit.record.id, hit.record.node_id, hit.record.content
-                );
+                println!("{}", format_memory_hit(&hit));
             }
         }
         MemoryCommand::Context {
@@ -2146,10 +2180,7 @@ async fn memory(command: MemoryCommand) -> Result<()> {
             }
             println!("# memory.find");
             for hit in hits {
-                println!(
-                    "{:.4}\t{}\t{}\t{}",
-                    hit.score, hit.record.id, hit.record.node_id, hit.record.content
-                );
+                println!("{}", format_memory_hit(&hit));
             }
         }
         MemoryCommand::Distill {
@@ -2232,6 +2263,34 @@ async fn memory(command: MemoryCommand) -> Result<()> {
         MemoryCommand::Anchor { command } => anchor(command).await?,
     }
     Ok(())
+}
+
+fn parse_confidence(value: &str) -> std::result::Result<f32, String> {
+    let confidence = value
+        .parse::<f32>()
+        .map_err(|error| format!("confidence must be a number in 0.0..=1.0: {error}"))?;
+    if !(0.0..=1.0).contains(&confidence) {
+        return Err(format!(
+            "confidence must be within 0.0..=1.0, got {confidence}"
+        ));
+    }
+    Ok(confidence)
+}
+
+fn format_memory_hit(hit: &SearchHit) -> String {
+    let mut fields = vec![
+        format!("{:.4}", hit.score),
+        hit.record.id.to_string(),
+        hit.record.node_id.clone(),
+        hit.record.content.clone(),
+    ];
+    if let Some(source) = &hit.record.source {
+        fields.push(format!("source={source}"));
+    }
+    if let Some(confidence) = hit.record.confidence {
+        fields.push(format!("confidence={confidence}"));
+    }
+    fields.join("\t")
 }
 
 async fn anchor(command: AnchorCommand) -> Result<()> {

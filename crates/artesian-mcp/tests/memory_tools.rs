@@ -12,10 +12,10 @@ use aquifer::{
 };
 use artesian_core::{AgentBinding, AgentCatalog, AgentCatalogEntry, AgentModel, Mode, Role};
 use artesian_mcp::{
-    AnchorSetRequest, BindRequest, CommitRequest, DelegateRequest, FindRequest, MemoryServer,
-    StoreRequest, TeamCreateRequest, TeamMessageKindRequest, TeamMessageRequest, TeamSpawnRequest,
-    TeamStatusRequest, TeamTaskAddRequest, TeamTaskClaimRequest, TeamTaskCompleteRequest,
-    ToolsFindRequest,
+    AnchorSetRequest, AnswerRequest, BindRequest, CommitRequest, DelegateRequest, FindRequest,
+    MemoryServer, StoreRequest, TeamCreateRequest, TeamMessageKindRequest, TeamMessageRequest,
+    TeamSpawnRequest, TeamStatusRequest, TeamTaskAddRequest, TeamTaskClaimRequest,
+    TeamTaskCompleteRequest, ToolsFindRequest,
 };
 use artesian_test_support::TempDir;
 use rmcp::handler::server::wrapper::Parameters;
@@ -30,6 +30,8 @@ async fn memory_tools_store_and_find_with_files_backend() {
             content: "MCP memory tool round trip".to_string(),
             tags: Some(vec!["mcp".to_string()]),
             node_id: Some("node:mcp".to_string()),
+            source: Some("mcp-test".to_string()),
+            confidence: Some(0.9),
             scope: None,
             agent_id: None,
             session_id: None,
@@ -59,6 +61,21 @@ async fn memory_tools_store_and_find_with_files_backend() {
     assert_eq!(found.hits.len(), 1);
     assert_eq!(found.hits[0].node_id, "node:mcp");
     assert_eq!(found.hits[0].content, "MCP memory tool round trip");
+    assert_eq!(found.hits[0].source.as_deref(), Some("mcp-test"));
+    assert_eq!(found.hits[0].confidence, Some(0.9));
+
+    let answer = server
+        .memory_answer(Parameters(AnswerRequest {
+            question: "What round trip does MCP remember?".to_string(),
+            limit: Some(1),
+        }))
+        .await
+        .expect("answer should succeed")
+        .0;
+    assert!(answer.extractive);
+    assert_eq!(answer.sources, vec!["node:mcp"]);
+    assert!(answer.answer.contains("[node:mcp]"));
+    assert!(answer.answer.contains("MCP memory tool round trip"));
 }
 
 #[tokio::test]
@@ -75,6 +92,8 @@ async fn memory_commit_runs_acc_cycle_with_files_backend() {
                 content: content.to_string(),
                 tags: None,
                 node_id: None,
+                source: None,
+                confidence: None,
                 scope: None,
                 agent_id: None,
                 session_id: None,
@@ -642,6 +661,8 @@ async fn memory_tools_store_and_find_with_sqlite_vec_backend() {
             content: "MCP sqlite vector memory round trip".to_string(),
             tags: Some(vec!["mcp".to_string()]),
             node_id: Some("node:mcp-sqlite".to_string()),
+            source: None,
+            confidence: None,
             scope: None,
             agent_id: None,
             session_id: None,

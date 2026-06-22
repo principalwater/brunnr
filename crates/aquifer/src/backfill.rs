@@ -125,6 +125,8 @@ fn parse_json_memory(text: &str, path: &Path) -> MemoryResult<Vec<StoreMemory>> 
             session_id: record.session_id,
             task_id: record.task_id,
             user_id: record.user_id,
+            source: record.source,
+            confidence: record.confidence,
         }]);
     }
 
@@ -154,6 +156,8 @@ fn parse_markdown_memory(text: &str, path: &Path) -> MemoryResult<Vec<StoreMemor
             session_id: record.session_id,
             task_id: record.task_id,
             user_id: record.user_id,
+            source: record.source,
+            confidence: record.confidence,
         };
         return Ok(section_aware_chunks(memory, path));
     }
@@ -175,6 +179,8 @@ fn parse_markdown_memory(text: &str, path: &Path) -> MemoryResult<Vec<StoreMemor
         session_id: None,
         task_id: None,
         user_id: None,
+        source: None,
+        confidence: None,
     };
     Ok(section_aware_chunks(memory, path))
 }

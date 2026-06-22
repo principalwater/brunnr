@@ -53,6 +53,8 @@ impl VectorTaskStore {
                 session_id: None,
                 task_id: Some(task.id.clone()),
                 user_id: None,
+                source: None,
+                confidence: None,
             })
             .await?;
         Ok(())

@@ -196,6 +196,8 @@ mod tests {
             session_id: None,
             task_id: None,
             user_id: None,
+            source: None,
+            confidence: None,
         }
     }
 

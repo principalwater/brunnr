@@ -40,6 +40,8 @@ async fn live_qdrant_benchmark_path_uses_real_vector_backend() {
                 session_id: None,
                 task_id: None,
                 user_id: None,
+                source: None,
+                confidence: None,
             })
             .await
             .map_err(|error| format!("store should succeed: {error}"))?;

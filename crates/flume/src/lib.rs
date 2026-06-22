@@ -228,9 +228,8 @@ fn split_frontmatter(text: &str) -> FlumeResult<(&str, &str)> {
     let rest = text
         .strip_prefix("---\n")
         .ok_or_else(|| FlumeError::InvalidDefinition("missing YAML frontmatter".to_string()))?;
-    rest.split_once("\n---\n").ok_or_else(|| {
-        FlumeError::InvalidDefinition("unterminated YAML frontmatter".to_string())
-    })
+    rest.split_once("\n---\n")
+        .ok_or_else(|| FlumeError::InvalidDefinition("unterminated YAML frontmatter".to_string()))
 }
 
 fn required_header(value: Option<String>, name: &str, path: &Path) -> FlumeResult<String> {
@@ -714,11 +713,7 @@ impl TeamRuntime {
         Ok(redact_secrets(&response.content))
     }
 
-    fn requires_plan_approval(
-        &self,
-        team_id: &str,
-        request: &TeamTaskClaim,
-    ) -> FlumeResult<bool> {
+    fn requires_plan_approval(&self, team_id: &str, request: &TeamTaskClaim) -> FlumeResult<bool> {
         let team = self.team(team_id)?;
         let Some(task_id) = request.task_id.as_ref() else {
             return Ok(false);

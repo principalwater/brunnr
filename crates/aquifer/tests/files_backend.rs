@@ -25,6 +25,8 @@ async fn files_backend_stores_okf_markdown_and_finds_it() {
             session_id: None,
             task_id: None,
             user_id: None,
+            source: None,
+            confidence: None,
         })
         .await
         .expect("store should succeed");
@@ -70,6 +72,8 @@ async fn files_backend_drills_down_by_node_id() {
             session_id: None,
             task_id: None,
             user_id: None,
+            source: None,
+            confidence: None,
         })
         .await
         .expect("store should succeed");
@@ -109,4 +113,30 @@ async fn files_backend_reads_okf_bundle_fixture() {
         record.expect("node:rrf should exist").metadata["okf_type"],
         "reference"
     );
+}
+
+#[tokio::test]
+async fn files_backend_loads_records_without_provenance_fields() {
+    let tempdir = TempDir::new("files-legacy-provenance");
+    let memory_dir = tempdir.join("memory").join("2026-01-02");
+    std::fs::create_dir_all(&memory_dir).expect("memory dir should be created");
+    std::fs::write(
+        memory_dir.join("legacy.md"),
+        "---\ntype: memory\nid: legacy\nnode_id: node:legacy\ntier: l1-atom\ntags: []\nmetadata: {}\ntimestamp: 2026-01-02T00:00:00Z\n---\n\nlegacy memory without provenance fields\n",
+    )
+    .expect("legacy memory should be written");
+    let backend = FilesBackend::new(tempdir.path());
+
+    let hits = backend
+        .find(MemoryQuery::new("legacy provenance").with_limit(3))
+        .await
+        .expect("legacy record should load");
+
+    let record = hits
+        .into_iter()
+        .find(|hit| hit.record.node_id == "node:legacy")
+        .expect("legacy record should be found")
+        .record;
+    assert_eq!(record.source, None);
+    assert_eq!(record.confidence, None);
 }

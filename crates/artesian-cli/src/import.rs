@@ -85,7 +85,14 @@ pub async fn import_directory(
         let before_failed = report.failed.len();
         let is_task = FilesTaskStore::is_task_like_path(path);
         if is_task {
-            import_task_path(&options.directory, path, task_store, &mut report, &mut catalog).await;
+            import_task_path(
+                &options.directory,
+                path,
+                task_store,
+                &mut report,
+                &mut catalog,
+            )
+            .await;
         } else {
             import_memory_path(
                 &options.directory,
