@@ -55,6 +55,7 @@ impl VectorTaskStore {
                 user_id: None,
                 source: None,
                 confidence: None,
+                relations: Vec::new(),
             })
             .await?;
         Ok(())

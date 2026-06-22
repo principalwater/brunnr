@@ -10,6 +10,7 @@ mod compat;
 pub mod entity;
 pub mod episode;
 mod files;
+pub mod graph;
 mod identity;
 mod lane_lock;
 mod mmr;
@@ -43,6 +44,10 @@ pub use compat::{CollectionCompat, COMPAT_POINT_ID, OKF_VERSION};
 pub use entity::{extract_entities, EntityIndex};
 pub use episode::EpisodeIndex;
 pub use files::FilesBackend;
+pub use graph::{
+    expand_hits_with_neighbors, Relation, DEFAULT_GRAPH_HOPS, GRAPH_EXPANSION_LIMIT,
+    GRAPH_SCAN_LIMIT, MAX_GRAPH_HOPS,
+};
 pub use identity::stable_memory_id;
 pub use lane_lock::{SessionLaneGuard, SessionLaneLock};
 pub use mmr::{mmr_diversify, MMR_DEFAULT_LAMBDA};

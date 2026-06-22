@@ -84,6 +84,7 @@ async fn live_qdrant_vector_backend_satisfies_memory_contract() {
             user_id: None,
             source: None,
             confidence: None,
+            relations: Vec::new(),
         })
         .await
         .expect("store should succeed");
@@ -102,6 +103,7 @@ async fn live_qdrant_vector_backend_satisfies_memory_contract() {
             user_id: None,
             source: None,
             confidence: None,
+            relations: Vec::new(),
         })
         .await
         .expect("second store should succeed");
@@ -184,6 +186,7 @@ async fn live_qdrant_small_to_big_expands_and_reconstructs() {
             user_id: None,
             source: None,
             confidence: None,
+            relations: Vec::new(),
         })
         .await
         .expect("store should succeed");
@@ -267,6 +270,7 @@ async fn live_qdrant_collections_isolate_two_projects() {
             user_id: Some("user-a".to_string()),
             source: None,
             confidence: None,
+            relations: Vec::new(),
         })
         .await
         .expect("project A store should succeed");
@@ -285,6 +289,7 @@ async fn live_qdrant_collections_isolate_two_projects() {
             user_id: Some("user-b".to_string()),
             source: None,
             confidence: None,
+            relations: Vec::new(),
         })
         .await
         .expect("project B store should succeed");

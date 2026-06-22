@@ -232,6 +232,18 @@ impl<B: MemoryBackend> MemoryBackend for TransactionalMemory<B> {
     fn get_node(&self, node_id: &str) -> BoxFuture<'_, MemoryResult<Option<MemoryRecord>>> {
         self.inner.get_node(node_id)
     }
+
+    fn neighbors(
+        &self,
+        node_id: &str,
+        hops: usize,
+    ) -> BoxFuture<'_, MemoryResult<Vec<MemoryRecord>>> {
+        self.inner.neighbors(node_id, hops)
+    }
+
+    fn by_entity(&self, entity: &str) -> BoxFuture<'_, MemoryResult<Vec<MemoryRecord>>> {
+        self.inner.by_entity(entity)
+    }
 }
 
 /// Report from a directory sync.

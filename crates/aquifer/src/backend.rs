@@ -11,6 +11,8 @@ use crate::{
 ///
 /// Backends must support storing durable memories, finding relevant memories, hybrid RRF fusion,
 /// and deterministic drill-down by `node_id` so summaries stay traceable to ground-truth records.
+/// Backends may also expose an entity-relation layer; the default graph methods return empty so
+/// older or non-indexing backends remain valid.
 ///
 /// ```
 /// # use futures_util::{future::BoxFuture, FutureExt};
@@ -57,6 +59,18 @@ pub trait MemoryBackend: Send + Sync {
     }
 
     fn get_node(&self, node_id: &str) -> BoxFuture<'_, MemoryResult<Option<MemoryRecord>>>;
+
+    fn neighbors(
+        &self,
+        _node_id: &str,
+        _hops: usize,
+    ) -> BoxFuture<'_, MemoryResult<Vec<MemoryRecord>>> {
+        async { Ok(Vec::new()) }.boxed()
+    }
+
+    fn by_entity(&self, _entity: &str) -> BoxFuture<'_, MemoryResult<Vec<MemoryRecord>>> {
+        async { Ok(Vec::new()) }.boxed()
+    }
 }
 
 /// Delegating impl so a type-erased `Arc<dyn MemoryBackend>` can be used wherever a
@@ -72,5 +86,17 @@ impl MemoryBackend for std::sync::Arc<dyn MemoryBackend> {
 
     fn get_node(&self, node_id: &str) -> BoxFuture<'_, MemoryResult<Option<MemoryRecord>>> {
         (**self).get_node(node_id)
+    }
+
+    fn neighbors(
+        &self,
+        node_id: &str,
+        hops: usize,
+    ) -> BoxFuture<'_, MemoryResult<Vec<MemoryRecord>>> {
+        (**self).neighbors(node_id, hops)
+    }
+
+    fn by_entity(&self, entity: &str) -> BoxFuture<'_, MemoryResult<Vec<MemoryRecord>>> {
+        (**self).by_entity(entity)
     }
 }

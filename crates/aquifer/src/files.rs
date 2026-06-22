@@ -12,8 +12,10 @@ use serde::{Deserialize, Serialize};
 use tokio::{fs, io::AsyncWriteExt};
 
 use crate::{
-    identity::stable_memory_id, MemoryBackend, MemoryError, MemoryId, MemoryQuery, MemoryRecord,
-    MemoryResult, MemoryScope, MemoryTier, SearchHit, SearchSource, SessionLaneLock, StoreMemory,
+    graph::{by_entity_node_ids, neighbor_node_ids, normalize_relations, records_by_node_ids},
+    identity::stable_memory_id,
+    MemoryBackend, MemoryError, MemoryId, MemoryQuery, MemoryRecord, MemoryResult, MemoryScope,
+    MemoryTier, Relation, SearchHit, SearchSource, SessionLaneLock, StoreMemory,
 };
 
 #[derive(Debug, Clone)]
@@ -142,7 +144,11 @@ impl MemoryBackend for FilesBackend {
             self.ensure_reserved_files().await?;
             let now = memory.created_at.unwrap_or_else(Utc::now);
             let date_tag = now.format("%Y-%m-%d").to_string();
-            let node_id = memory.node_id.unwrap_or_else(|| format!("node:{id}"));
+            let node_id = memory
+                .node_id
+                .clone()
+                .unwrap_or_else(|| format!("node:{id}"));
+            let relations = normalize_relations(memory.relations.clone(), &node_id);
             let record = MemoryRecord {
                 id,
                 node_id,
@@ -158,6 +164,7 @@ impl MemoryBackend for FilesBackend {
                 user_id: memory.user_id,
                 source: memory.source,
                 confidence: memory.confidence,
+                relations,
             };
             let path = self.record_path(&date_tag, &record.id);
             if let Some(parent) = path.parent() {
@@ -177,6 +184,30 @@ impl MemoryBackend for FilesBackend {
                 .load_records()?
                 .into_iter()
                 .find(|record| record.node_id == node_id || record.id.as_str() == node_id))
+        }
+        .boxed()
+    }
+
+    fn neighbors(
+        &self,
+        node_id: &str,
+        hops: usize,
+    ) -> BoxFuture<'_, MemoryResult<Vec<MemoryRecord>>> {
+        let node_id = node_id.to_string();
+        async move {
+            let records = self.load_records()?;
+            let node_ids = neighbor_node_ids(&records, &node_id, hops);
+            Ok(records_by_node_ids(&records, node_ids))
+        }
+        .boxed()
+    }
+
+    fn by_entity(&self, entity: &str) -> BoxFuture<'_, MemoryResult<Vec<MemoryRecord>>> {
+        let entity = entity.to_string();
+        async move {
+            let records = self.load_records()?;
+            let node_ids = by_entity_node_ids(&records, &entity);
+            Ok(records_by_node_ids(&records, node_ids))
         }
         .boxed()
     }
@@ -204,6 +235,8 @@ struct FileHeader {
     source: Option<String>,
     #[serde(default)]
     confidence: Option<f32>,
+    #[serde(default)]
+    relations: Vec<Relation>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -255,6 +288,9 @@ struct OkfHeader {
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     confidence: Option<f32>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    relations: Vec<Relation>,
     #[serde(flatten)]
     unknown: BTreeMap<String, serde_yaml::Value>,
 }
@@ -290,6 +326,7 @@ fn render_record(record: &MemoryRecord) -> MemoryResult<String> {
         user_id: record.user_id.clone(),
         source: record.source.clone(),
         confidence: record.confidence,
+        relations: record.relations.clone(),
     };
     Ok(format!(
         "---\n{}---\n\n{}\n",
@@ -316,6 +353,7 @@ fn render_okf_header(header: FileHeader) -> String {
         user_id: header.user_id,
         source: header.source,
         confidence: header.confidence,
+        relations: header.relations,
         unknown: BTreeMap::new(),
     };
     serde_yaml::to_string(&okf).expect("OKF header serialization should be infallible")
@@ -340,9 +378,11 @@ pub(crate) fn parse_record(text: &str) -> MemoryResult<MemoryRecord> {
         .unwrap_or_else(|| body.trim())
         .to_string();
 
+    let node_id = header.node_id;
+    let relations = normalize_relations(header.relations, &node_id);
     Ok(MemoryRecord {
         id: header.id,
-        node_id: header.node_id,
+        node_id,
         content,
         tags: header.tags,
         metadata: header.metadata,
@@ -355,6 +395,7 @@ pub(crate) fn parse_record(text: &str) -> MemoryResult<MemoryRecord> {
         user_id: header.user_id,
         source: header.source,
         confidence: header.confidence,
+        relations,
     })
 }
 
@@ -409,9 +450,11 @@ fn parse_okf_record(text: &str) -> MemoryResult<MemoryRecord> {
         user_id: header.user_id.clone(),
         source: header.source.clone(),
         confidence: header.confidence,
+        relations: header.relations.clone(),
     };
     let id = header.id.unwrap_or_else(|| stable_memory_id(&store_memory));
     let node_id = header.node_id.unwrap_or_else(|| format!("node:{id}"));
+    let relations = normalize_relations(header.relations, &node_id);
     Ok(MemoryRecord {
         id,
         node_id,
@@ -427,6 +470,7 @@ fn parse_okf_record(text: &str) -> MemoryResult<MemoryRecord> {
         user_id: header.user_id,
         source: header.source,
         confidence: header.confidence,
+        relations,
     })
 }
 

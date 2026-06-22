@@ -95,6 +95,7 @@ async fn simulated_compaction_replays_anchor_and_targeted_memory() {
             user_id: None,
             source: None,
             confidence: None,
+            relations: Vec::new(),
         })
         .await
         .expect("memory store should succeed");

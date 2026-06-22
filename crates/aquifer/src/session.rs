@@ -186,6 +186,7 @@ impl SessionStore {
                 user_id: Some(key.user_id.clone()),
                 source: Some(SESSION_RECORD_SOURCE.to_string()),
                 confidence: Some(1.0),
+                relations: Vec::new(),
             })
             .await?;
         Ok(SessionSummary::from(&session))

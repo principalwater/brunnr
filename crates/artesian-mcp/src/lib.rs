@@ -14,7 +14,7 @@ use std::{
 use std::env;
 
 use aquifer::{
-    AnchorAnchorStore, FilesBackend, MemoryBackend, MemoryQuery, MemoryScope, MemoryTier,
+    AnchorAnchorStore, FilesBackend, MemoryBackend, MemoryQuery, MemoryScope, MemoryTier, Relation,
     SearchHit, SessionAnchor, SessionKey, SessionStore, SessionSummary, SqliteVecVectorStore,
     SqliteVecVectorStoreConfig, StoreMemory, VectorMemoryBackend, VectorMemoryConfig,
     SESSION_RECORD_TAG,
@@ -358,6 +358,7 @@ pub struct FindRequest {
     pub query: String,
     pub limit: Option<usize>,
     pub node_id: Option<String>,
+    pub expand: Option<bool>,
     pub scope: Option<ScopeRequest>,
     pub agent_id: Option<String>,
     pub session_id: Option<String>,
@@ -401,6 +402,7 @@ pub struct ContextRequest {
     pub query: String,
     pub limit: Option<usize>,
     pub index_chars: Option<usize>,
+    pub expand: Option<bool>,
     pub scope: Option<ScopeRequest>,
     pub agent_id: Option<String>,
     pub session_id: Option<String>,
@@ -448,6 +450,7 @@ pub struct StoreRequest {
     pub content: String,
     pub tags: Option<Vec<String>>,
     pub node_id: Option<String>,
+    pub relations: Option<Vec<RelationRequest>>,
     pub source: Option<String>,
     pub confidence: Option<f32>,
     pub scope: Option<ScopeRequest>,
@@ -455,6 +458,26 @@ pub struct StoreRequest {
     pub session_id: Option<String>,
     pub task_id: Option<String>,
     pub user_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct RelationRequest {
+    pub subject: String,
+    pub predicate: String,
+    pub object: String,
+    #[serde(default)]
+    pub source_node_id: Option<String>,
+}
+
+impl From<RelationRequest> for Relation {
+    fn from(value: RelationRequest) -> Self {
+        Relation::new(
+            value.subject,
+            value.predicate,
+            value.object,
+            value.source_node_id.unwrap_or_default(),
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, schemars::JsonSchema)]
@@ -1171,19 +1194,27 @@ impl MemoryServer {
         let mut query = MemoryQuery::new(request.query);
         query.limit = request.limit.unwrap_or(10);
         query.node_id = request.node_id;
+        let expand = request.expand.unwrap_or(false);
         query.scope = request.scope.map(Into::into);
         query.agent_id = request.agent_id;
         query.session_id = request.session_id;
         query.task_id = request.task_id;
         query.user_id = request.user_id;
-        let hits = self
+        let mut hits = self
             .backend
             .find(query)
             .await
-            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?
-            .into_iter()
-            .map(find_hit)
-            .collect();
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        if expand {
+            hits = aquifer::expand_hits_with_neighbors(
+                self.backend.as_ref(),
+                hits,
+                aquifer::DEFAULT_GRAPH_HOPS,
+            )
+            .await
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        }
+        let hits = hits.into_iter().map(find_hit).collect();
         Ok(Json(FindResponse { hits }))
     }
 
@@ -1224,19 +1255,27 @@ impl MemoryServer {
             });
         let mut query = MemoryQuery::new(request.query);
         query.limit = request.limit.unwrap_or(10);
+        let expand = request.expand.unwrap_or(false);
         query.scope = request.scope.map(Into::into);
         query.agent_id = request.agent_id;
         query.session_id = request.session_id;
         query.task_id = request.task_id;
         query.user_id = request.user_id;
-        let hits = self
+        let mut hits = self
             .backend
             .find(query)
             .await
-            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?
-            .into_iter()
-            .map(find_hit)
-            .collect();
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        if expand {
+            hits = aquifer::expand_hits_with_neighbors(
+                self.backend.as_ref(),
+                hits,
+                aquifer::DEFAULT_GRAPH_HOPS,
+            )
+            .await
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        }
+        let hits = hits.into_iter().map(find_hit).collect();
         // When a goal is given, also surface the invariants relevant to it (tag-filtered), so the
         // caller can assemble a goal-scoped packet — goal + invariants + relevant memory.
         let mut invariants = Vec::new();
@@ -1284,6 +1323,12 @@ impl MemoryServer {
                 user_id: request.user_id,
                 source: request.source,
                 confidence,
+                relations: request
+                    .relations
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(Into::into)
+                    .collect(),
             })
             .await
             .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
@@ -1815,6 +1860,7 @@ Call when the project vision or current phase changes."
                 user_id: None,
                 source: None,
                 confidence: None,
+                relations: Vec::new(),
             })
             .await;
         Ok(Json(HandoffResponse {

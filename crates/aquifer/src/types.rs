@@ -6,6 +6,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::Relation;
+
 pub type MemoryResult<T> = Result<T, MemoryError>;
 
 #[derive(Debug, Error)]
@@ -110,6 +112,8 @@ pub struct MemoryRecord {
     pub source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confidence: Option<f32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub relations: Vec<Relation>,
 }
 
 impl Eq for MemoryRecord {}
@@ -138,6 +142,7 @@ impl MemoryRecord {
             user_id: None,
             source: None,
             confidence: None,
+            relations: Vec::new(),
         }
     }
 }
@@ -168,6 +173,8 @@ pub struct StoreMemory {
     pub source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confidence: Option<f32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub relations: Vec<Relation>,
 }
 
 impl Eq for StoreMemory {}
@@ -188,6 +195,7 @@ impl StoreMemory {
             user_id: None,
             source: None,
             confidence: None,
+            relations: Vec::new(),
         }
     }
 

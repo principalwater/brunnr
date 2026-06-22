@@ -105,6 +105,7 @@ mod tests {
                 user_id: None,
                 source: None,
                 confidence: None,
+                relations: Vec::new(),
             },
             score,
             source: SearchSource::Hybrid,

@@ -13,9 +13,10 @@ use aquifer::{
 use artesian_core::{AgentBinding, AgentCatalog, AgentCatalogEntry, AgentModel, Mode, Role};
 use artesian_mcp::{
     AnchorSetRequest, AnswerRequest, BindRequest, CommitRequest, DelegateRequest, FindRequest,
-    MemoryServer, SessionCheckpointRequest, SessionResumeRequest, StoreRequest, TeamCreateRequest,
-    TeamMessageKindRequest, TeamMessageRequest, TeamSpawnRequest, TeamStatusRequest,
-    TeamTaskAddRequest, TeamTaskClaimRequest, TeamTaskCompleteRequest, ToolsFindRequest,
+    MemoryServer, RelationRequest, SessionCheckpointRequest, SessionResumeRequest, StoreRequest,
+    TeamCreateRequest, TeamMessageKindRequest, TeamMessageRequest, TeamSpawnRequest,
+    TeamStatusRequest, TeamTaskAddRequest, TeamTaskClaimRequest, TeamTaskCompleteRequest,
+    ToolsFindRequest,
 };
 use artesian_test_support::TempDir;
 use rmcp::handler::server::wrapper::Parameters;
@@ -30,6 +31,7 @@ async fn memory_tools_store_and_find_with_files_backend() {
             content: "MCP memory tool round trip".to_string(),
             tags: Some(vec!["mcp".to_string()]),
             node_id: Some("node:mcp".to_string()),
+            relations: None,
             source: Some("mcp-test".to_string()),
             confidence: Some(0.9),
             scope: None,
@@ -47,6 +49,7 @@ async fn memory_tools_store_and_find_with_files_backend() {
             query: "round".to_string(),
             limit: Some(5),
             node_id: Some("node:mcp".to_string()),
+            expand: None,
             scope: None,
             agent_id: None,
             session_id: None,
@@ -79,6 +82,96 @@ async fn memory_tools_store_and_find_with_files_backend() {
 }
 
 #[tokio::test]
+async fn memory_find_expand_includes_relation_neighbor() {
+    let tempdir = TempDir::new("mcp-expand");
+    let server = MemoryServer::new(tempdir.path());
+
+    server
+        .memory_store(Parameters(StoreRequest {
+            content: "needle relation anchor".to_string(),
+            tags: None,
+            node_id: Some("node:anchor".to_string()),
+            relations: Some(vec![RelationRequest {
+                subject: "AnchorMemory".to_string(),
+                predicate: "links".to_string(),
+                object: "SharedEntity".to_string(),
+                source_node_id: None,
+            }]),
+            source: None,
+            confidence: None,
+            scope: None,
+            agent_id: None,
+            session_id: None,
+            task_id: None,
+            user_id: None,
+        }))
+        .await
+        .expect("store anchor should succeed");
+    server
+        .memory_store(Parameters(StoreRequest {
+            content: "connected neighbor fact".to_string(),
+            tags: None,
+            node_id: Some("node:neighbor".to_string()),
+            relations: Some(vec![RelationRequest {
+                subject: "SharedEntity".to_string(),
+                predicate: "explains".to_string(),
+                object: "NeighborFact".to_string(),
+                source_node_id: None,
+            }]),
+            source: None,
+            confidence: None,
+            scope: None,
+            agent_id: None,
+            session_id: None,
+            task_id: None,
+            user_id: None,
+        }))
+        .await
+        .expect("store neighbor should succeed");
+
+    let default_find = server
+        .memory_find(Parameters(FindRequest {
+            query: "needle".to_string(),
+            limit: Some(1),
+            node_id: None,
+            expand: None,
+            scope: None,
+            agent_id: None,
+            session_id: None,
+            task_id: None,
+            user_id: None,
+        }))
+        .await
+        .expect("default find should succeed")
+        .0;
+    assert_eq!(default_find.hits.len(), 1);
+    assert_eq!(default_find.hits[0].node_id, "node:anchor");
+
+    let expanded_find = server
+        .memory_find(Parameters(FindRequest {
+            query: "needle".to_string(),
+            limit: Some(1),
+            node_id: None,
+            expand: Some(true),
+            scope: None,
+            agent_id: None,
+            session_id: None,
+            task_id: None,
+            user_id: None,
+        }))
+        .await
+        .expect("expanded find should succeed")
+        .0;
+    let nodes = expanded_find
+        .hits
+        .iter()
+        .map(|hit| hit.node_id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(nodes[0], "node:anchor");
+    assert!(nodes.contains(&"node:neighbor"), "{nodes:?}");
+}
+
+#[tokio::test]
 async fn memory_commit_runs_acc_cycle_with_files_backend() {
     let tempdir = TempDir::new("mcp-commit");
     let server = MemoryServer::new(tempdir.path());
@@ -92,6 +185,7 @@ async fn memory_commit_runs_acc_cycle_with_files_backend() {
                 content: content.to_string(),
                 tags: None,
                 node_id: None,
+                relations: None,
                 source: None,
                 confidence: None,
                 scope: None,
@@ -162,6 +256,7 @@ async fn memory_session_checkpoint_and_resume_are_cross_agent() {
             content: "session scoped implementation detail".to_string(),
             tags: None,
             node_id: Some("node:session-detail".to_string()),
+            relations: None,
             source: None,
             confidence: None,
             scope: Some(artesian_mcp::ScopeRequest::Session),
@@ -809,6 +904,7 @@ async fn memory_tools_store_and_find_with_sqlite_vec_backend() {
             content: "MCP sqlite vector memory round trip".to_string(),
             tags: Some(vec!["mcp".to_string()]),
             node_id: Some("node:mcp-sqlite".to_string()),
+            relations: None,
             source: None,
             confidence: None,
             scope: None,
@@ -825,6 +921,7 @@ async fn memory_tools_store_and_find_with_sqlite_vec_backend() {
             query: "vector".to_string(),
             limit: Some(5),
             node_id: Some("node:mcp-sqlite".to_string()),
+            expand: None,
             scope: None,
             agent_id: None,
             session_id: None,

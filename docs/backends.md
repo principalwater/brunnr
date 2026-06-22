@@ -168,6 +168,72 @@ Worked example: `crates/aquifer/src/pgvector.rs` (feature `pgvector`).
 Keep the trait minimal: do not push embedding, RRF, or chunking into the adapter — those stay in
 `VectorMemoryBackend` so every engine behaves identically. Never log credentials.
 
+## Composing With Strong External Retrieval Engines
+
+Artesian does not need to compete with specialized recall engines on raw retrieval quality. Treat a
+strong external engine — for example an info-theoretic, hybrid, or domain-specific retriever — as a
+`VectorStore` adapter. The adapter receives Artesian's normalized points `{ id, vector, payload }`,
+honors `Filter` for tenancy and scoped recall, and returns `VectorSearchHit` values from its own ANN,
+hybrid, sparse, or reranked search pipeline.
+
+Because the seam stays at `VectorStore`, the external engine inherits Artesian behavior above the
+substrate:
+
+- chunk-on-store and parent `node_id` drill-down;
+- keyword/vector hybrid RRF when the engine does not advertise server-side hybrid;
+- optional reranking, entity signals, relation expansion, and small-to-big context windows;
+- tenancy fields (`scope`, `agent_id`, `session_id`, `task_id`, `user_id`) through normalized
+  payload filters.
+
+A minimal stub shape is:
+
+```rust
+// SPDX-License-Identifier: Apache-2.0
+use futures_util::{future::BoxFuture, FutureExt};
+use aquifer::{
+    MemoryResult, PayloadIndex, VectorCollection, VectorMemoryBackend, VectorPoint,
+    VectorSearch, VectorSearchHit, VectorStore, VectorStoreCapabilities,
+};
+
+pub struct ExternalRecallStore {
+    // client/config for the external engine
+}
+
+pub type ExternalRecallBackend = VectorMemoryBackend<ExternalRecallStore>;
+
+impl VectorStore for ExternalRecallStore {
+    fn ensure_collection(&self, _: VectorCollection) -> BoxFuture<'_, MemoryResult<()>> {
+        async { Ok(()) }.boxed()
+    }
+
+    fn ensure_payload_index(&self, _: &str, _: PayloadIndex) -> BoxFuture<'_, MemoryResult<()>> {
+        async { Ok(()) }.boxed()
+    }
+
+    fn upsert(&self, _: &str, _: Vec<VectorPoint>) -> BoxFuture<'_, MemoryResult<()>> {
+        async { Ok(()) }.boxed()
+    }
+
+    fn search(&self, _: &str, _: VectorSearch) -> BoxFuture<'_, MemoryResult<Vec<VectorSearchHit>>> {
+        async { Ok(Vec::new()) }.boxed()
+    }
+
+    fn get(&self, _: &str, _: &str) -> BoxFuture<'_, MemoryResult<Option<VectorPoint>>> {
+        async { Ok(None) }.boxed()
+    }
+
+    fn capabilities(&self) -> VectorStoreCapabilities {
+        VectorStoreCapabilities {
+            supports_server_side_hybrid: true,
+            supports_sparse: true,
+        }
+    }
+}
+```
+
+Keep the adapter responsible only for storage/search translation. Leave chunking, embedding model
+compatibility checks, relation expansion, and memory policy in `VectorMemoryBackend`.
+
 ## Reserved backends
 
 `TencentDBBackend` remains a reserved backend name behind the same `MemoryBackend` trait.

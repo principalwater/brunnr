@@ -27,6 +27,7 @@ async fn files_backend_stores_okf_markdown_and_finds_it() {
             user_id: None,
             source: None,
             confidence: None,
+            relations: Vec::new(),
         })
         .await
         .expect("store should succeed");
@@ -74,6 +75,7 @@ async fn files_backend_drills_down_by_node_id() {
             user_id: None,
             source: None,
             confidence: None,
+            relations: Vec::new(),
         })
         .await
         .expect("store should succeed");

@@ -671,6 +671,9 @@ enum MemoryCommand {
         task_id: Option<String>,
         #[arg(long)]
         user_id: Option<String>,
+        /// Expand results one hop through explicit entity-relation links.
+        #[arg(long)]
+        expand: bool,
         /// Diversify results with Maximal Marginal Relevance to drop near-duplicates (fetches a
         /// larger pool, then re-ranks to --limit).
         #[arg(long)]
@@ -695,6 +698,9 @@ enum MemoryCommand {
         /// instead of a flat index + hit list. Invariants are memories tagged `invariant`.
         #[arg(long)]
         goal: Option<String>,
+        /// Expand memory hits one hop through explicit entity-relation links.
+        #[arg(long)]
+        expand: bool,
         #[arg(long, default_value = DEFAULT_CONFIG)]
         config: PathBuf,
         #[arg(long, default_value = ".artesian")]
@@ -2999,6 +3005,7 @@ async fn memory(command: MemoryCommand) -> Result<()> {
                     user_id,
                     source,
                     confidence,
+                    relations: Vec::new(),
                 })
                 .await?;
             println!("stored memory id={} node_id={}", record.id, record.node_id);
@@ -3027,6 +3034,7 @@ async fn memory(command: MemoryCommand) -> Result<()> {
             session_id,
             task_id,
             user_id,
+            expand,
             mmr,
             mmr_lambda,
             config,
@@ -3056,6 +3064,14 @@ async fn memory(command: MemoryCommand) -> Result<()> {
                     mmr_lambda.unwrap_or(aquifer::MMR_DEFAULT_LAMBDA),
                 );
             }
+            if expand {
+                hits = aquifer::expand_hits_with_neighbors(
+                    backend.as_ref(),
+                    hits,
+                    aquifer::DEFAULT_GRAPH_HOPS,
+                )
+                .await?;
+            }
             for hit in hits {
                 println!("{}", format_memory_hit(&hit));
             }
@@ -3065,6 +3081,7 @@ async fn memory(command: MemoryCommand) -> Result<()> {
             limit,
             index_chars,
             goal,
+            expand,
             config,
             root,
             backend,
@@ -3081,9 +3098,17 @@ async fn memory(command: MemoryCommand) -> Result<()> {
                 println!("{packet}");
                 return Ok(());
             }
-            let hits = backend
+            let mut hits = backend
                 .find(MemoryQuery::new(query).with_limit(limit))
                 .await?;
+            if expand {
+                hits = aquifer::expand_hits_with_neighbors(
+                    backend.as_ref(),
+                    hits,
+                    aquifer::DEFAULT_GRAPH_HOPS,
+                )
+                .await?;
+            }
             if let Some(index) = index {
                 println!("# index.md\n{index}");
             }

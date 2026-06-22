@@ -11,12 +11,16 @@ use crate::{
     chunking::{chunk_text, ChunkConfig},
     entity::EntityIndex,
     episode::EpisodeIndex,
+    graph::{
+        by_entity_node_ids, extract_entity_relations, neighbor_node_ids, normalize_relations,
+        records_by_node_ids, GRAPH_SCAN_LIMIT,
+    },
     identity::stable_memory_id,
     reciprocal_rank_fusion,
     temporal::{apply_knowledge_supersession, apply_recency_decay},
     CollectionCompat, Distance, Filter, FilterCondition, FilterValue, MemoryBackend, MemoryError,
     MemoryId, MemoryQuery, MemoryRecord, MemoryResult, MemoryScope, MemoryTier, PayloadIndex,
-    RrfOptions, SearchHit, SearchSource, SessionLaneLock, StoreMemory, VectorCollection,
+    Relation, RrfOptions, SearchHit, SearchSource, SessionLaneLock, StoreMemory, VectorCollection,
     VectorPoint, VectorSearch, VectorSearchHit, VectorSearchSource, VectorStore, COMPAT_POINT_ID,
 };
 
@@ -91,6 +95,11 @@ pub struct VectorMemoryConfig {
     /// ALL-CAPS acronyms. No LLM required. Default off — enable after measuring recall gain.
     #[serde(default)]
     pub entity_linking: bool,
+
+    /// Derive lightweight `mentions` relations from deterministic entity signals at store time.
+    /// Default off; explicit `StoreMemory.relations` are always accepted.
+    #[serde(default)]
+    pub relation_extraction: bool,
 
     /// D2: Multiply retrieval scores by `exp(−lambda × age_in_days)`.
     /// `0.0` disables decay. Suggested starting values: 0.005 (slow) – 0.02 (fast).
@@ -175,6 +184,7 @@ impl VectorMemoryConfig {
             distance: Distance::Cosine,
             quantization: crate::VectorQuantization::Float32,
             entity_linking: false,
+            relation_extraction: false,
             temporal_decay_lambda: 0.0,
             knowledge_update_supersession: false,
             episode_context_window: 0,
@@ -194,6 +204,11 @@ impl VectorMemoryConfig {
 
     pub fn with_entity_linking(mut self, enabled: bool) -> Self {
         self.entity_linking = enabled;
+        self
+    }
+
+    pub fn with_relation_extraction(mut self, enabled: bool) -> Self {
+        self.relation_extraction = enabled;
         self
     }
 
@@ -485,6 +500,51 @@ impl<V: VectorStore> VectorMemoryBackend<V> {
         Ok(records)
     }
 
+    async fn graph_records(&self) -> MemoryResult<Vec<MemoryRecord>> {
+        self.ensure_ready().await?;
+        let hits = self
+            .store
+            .search(
+                &self.config.collection,
+                VectorSearch {
+                    vector: None,
+                    text: None,
+                    filter: filter_from_query(&MemoryQuery::new("")),
+                    limit: GRAPH_SCAN_LIMIT,
+                    source: VectorSearchSource::Keyword,
+                },
+            )
+            .await?;
+        let mut records = Vec::new();
+        for hit in hits {
+            let record = point_to_record(hit.point)?;
+            if !record.relations.is_empty() {
+                records.push(record);
+            }
+        }
+        Ok(records)
+    }
+
+    async fn graph_records_for_node_ids(
+        &self,
+        records: &[MemoryRecord],
+        node_ids: Vec<String>,
+    ) -> MemoryResult<Vec<MemoryRecord>> {
+        let mut output = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        for node_id in node_ids {
+            if !seen.insert(node_id.clone()) {
+                continue;
+            }
+            if let Some(record) = self.get_node(&node_id).await? {
+                output.push(record);
+            } else {
+                output.extend(records_by_node_ids(records, vec![node_id]));
+            }
+        }
+        Ok(output)
+    }
+
     /// Small-to-big expansion: collapse same-parent chunk hits into one hit whose
     /// content is the bounded parent-section window around the matched chunk(s).
     /// Hits that are not chunks (no `parent_node`) pass through unchanged and keep
@@ -596,6 +656,7 @@ impl<V: VectorStore> VectorMemoryBackend<V> {
                 user_id,
                 source: provenance_source,
                 confidence,
+                relations,
                 mut metadata,
                 ..
             } = record;
@@ -626,6 +687,7 @@ impl<V: VectorStore> VectorMemoryBackend<V> {
                     user_id,
                     source: provenance_source,
                     confidence,
+                    relations,
                 },
             });
         }
@@ -858,13 +920,14 @@ impl<V: VectorStore> MemoryBackend for VectorMemoryBackend<V> {
             // context and collapse same-parent hits. A no-op when disabled or when
             // no hit is a chunk (e.g. single-chunk records), keeping small-document
             // recall byte-identical.
-            match self.effective_parent_budget() {
+            let hits = match self.effective_parent_budget() {
                 Some(budget) => {
                     self.expand_small_to_big(raw_hits, query.limit, budget)
                         .await
                 }
                 None => Ok(raw_hits),
-            }
+            }?;
+            Ok(hits)
         }
         .boxed()
     }
@@ -886,6 +949,15 @@ impl<V: VectorStore> MemoryBackend for VectorMemoryBackend<V> {
                 .node_id
                 .clone()
                 .unwrap_or_else(|| format!("node:{base_id}"));
+            let mut base_relations = memory.relations.clone();
+            if self.config.relation_extraction {
+                base_relations.extend(extract_entity_relations(
+                    &memory.content,
+                    &memory.tags,
+                    &base_node,
+                ));
+            }
+            let base_relations = normalize_relations(base_relations, &base_node);
             let created_at = memory.created_at.unwrap_or_else(Utc::now);
             let chunks = chunk_text(&memory.content, &ChunkConfig::default());
             let single = chunks.len() == 1;
@@ -927,6 +999,7 @@ impl<V: VectorStore> MemoryBackend for VectorMemoryBackend<V> {
                     user_id: memory.user_id.clone(),
                     source: memory.source.clone(),
                     confidence: memory.confidence,
+                    relations: Vec::new(),
                 };
                 // Single-chunk content keeps the original id (= stable id of the whole
                 // memory) so existing idempotency/dedup is unchanged; multi-chunk records
@@ -943,6 +1016,11 @@ impl<V: VectorStore> MemoryBackend for VectorMemoryBackend<V> {
                     }
                     continue;
                 }
+                let relations = if single || chunk.index == 0 {
+                    base_relations.clone()
+                } else {
+                    Vec::new()
+                };
                 let record = MemoryRecord {
                     id,
                     node_id,
@@ -958,6 +1036,7 @@ impl<V: VectorStore> MemoryBackend for VectorMemoryBackend<V> {
                     user_id: memory.user_id.clone(),
                     source: memory.source.clone(),
                     confidence: memory.confidence,
+                    relations,
                 };
                 let vector = self.embedder.embed_passage(&record.content)?;
                 self.store
@@ -1067,6 +1146,30 @@ impl<V: VectorStore> MemoryBackend for VectorMemoryBackend<V> {
         }
         .boxed()
     }
+
+    fn neighbors(
+        &self,
+        node_id: &str,
+        hops: usize,
+    ) -> BoxFuture<'_, MemoryResult<Vec<MemoryRecord>>> {
+        let node_id = node_id.to_string();
+        async move {
+            let records = self.graph_records().await?;
+            let node_ids = neighbor_node_ids(&records, &node_id, hops);
+            self.graph_records_for_node_ids(&records, node_ids).await
+        }
+        .boxed()
+    }
+
+    fn by_entity(&self, entity: &str) -> BoxFuture<'_, MemoryResult<Vec<MemoryRecord>>> {
+        let entity = entity.to_string();
+        async move {
+            let records = self.graph_records().await?;
+            let node_ids = by_entity_node_ids(&records, &entity);
+            self.graph_records_for_node_ids(&records, node_ids).await
+        }
+        .boxed()
+    }
 }
 
 /// Reconstruct a full parent record from all of its chunk siblings (no budget cap —
@@ -1098,6 +1201,7 @@ fn reconstruct_parent_record(parent_node: &str, siblings: Vec<MemoryRecord>) -> 
         user_id: first.user_id.clone(),
         source: first.source.clone(),
         confidence: first.confidence,
+        relations: first.relations.clone(),
     }
 }
 
@@ -1124,6 +1228,8 @@ struct MemoryPayload {
     source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     confidence: Option<f32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    relations: Vec<Relation>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1163,6 +1269,7 @@ impl From<&MemoryRecord> for MemoryPayload {
             user_id: record.user_id.clone(),
             source: record.source.clone(),
             confidence: record.confidence,
+            relations: record.relations.clone(),
         }
     }
 }
@@ -1184,6 +1291,7 @@ impl From<MemoryPayload> for MemoryRecord {
             user_id: payload.user_id,
             source: payload.source,
             confidence: payload.confidence,
+            relations: payload.relations,
         }
     }
 }
@@ -1289,6 +1397,7 @@ mod tests {
 
         assert_eq!(record.source, None);
         assert_eq!(record.confidence, None);
+        assert!(record.relations.is_empty());
     }
 
     #[test]

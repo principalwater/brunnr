@@ -171,6 +171,73 @@ fn cli_backfill_reports_bad_markdown_and_imports_tasks() {
 }
 
 #[test]
+fn cli_memory_find_expand_includes_relation_neighbor() {
+    let tempdir = TempDir::new("cli-expand");
+    let binary = env!("CARGO_BIN_EXE_artesian");
+    let import_dir = tempdir.join("import");
+    std::fs::create_dir_all(&import_dir).expect("import dir should exist");
+    std::fs::write(
+        import_dir.join("anchor.json"),
+        serde_json::to_string(&serde_json::json!({
+            "content": "needle relation anchor",
+            "tier": "l1-atom",
+            "node_id": "node:anchor",
+            "relations": [{
+                "subject": "AnchorMemory",
+                "predicate": "links",
+                "object": "SharedEntity",
+                "source_node_id": ""
+            }]
+        }))
+        .expect("anchor JSON should serialize"),
+    )
+    .expect("anchor should be written");
+    std::fs::write(
+        import_dir.join("neighbor.json"),
+        serde_json::to_string(&serde_json::json!({
+            "content": "connected neighbor fact",
+            "tier": "l1-atom",
+            "node_id": "node:neighbor",
+            "relations": [{
+                "subject": "SharedEntity",
+                "predicate": "explains",
+                "object": "NeighborFact",
+                "source_node_id": ""
+            }]
+        }))
+        .expect("neighbor JSON should serialize"),
+    )
+    .expect("neighbor should be written");
+
+    let backfill = Command::new(binary)
+        .args(["backfill", import_dir.to_str().expect("utf8 path")])
+        .current_dir(tempdir.path())
+        .output()
+        .expect("backfill should run");
+    assert!(backfill.status.success(), "{}", stderr(&backfill));
+
+    let default_find = Command::new(binary)
+        .args(["memory", "find", "needle", "--limit", "1"])
+        .current_dir(tempdir.path())
+        .output()
+        .expect("default find should run");
+    assert!(default_find.status.success(), "{}", stderr(&default_find));
+    let default_out = stdout(&default_find);
+    assert!(default_out.contains("node:anchor"), "{default_out}");
+    assert!(!default_out.contains("node:neighbor"), "{default_out}");
+
+    let expanded_find = Command::new(binary)
+        .args(["memory", "find", "needle", "--limit", "1", "--expand"])
+        .current_dir(tempdir.path())
+        .output()
+        .expect("expanded find should run");
+    assert!(expanded_find.status.success(), "{}", stderr(&expanded_find));
+    let expanded_out = stdout(&expanded_find);
+    assert!(expanded_out.contains("node:anchor"), "{expanded_out}");
+    assert!(expanded_out.contains("node:neighbor"), "{expanded_out}");
+}
+
+#[test]
 fn cli_handoff_and_session_list_read_committed_session() {
     let tempdir = TempDir::new("cli-session");
     let binary = env!("CARGO_BIN_EXE_artesian");

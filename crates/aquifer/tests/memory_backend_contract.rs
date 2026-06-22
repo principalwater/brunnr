@@ -6,9 +6,9 @@ use std::{
 };
 
 use aquifer::{
-    FilesBackend, MemoryBackend, MemoryId, MemoryQuery, MemoryRecord, MemoryResult, MemoryScope,
-    MemoryTier, RrfOptions, SearchHit, SqliteVecVectorStore, StoreMemory, TextEmbedder,
-    VectorMemoryBackend, VectorMemoryConfig,
+    expand_hits_with_neighbors, FilesBackend, MemoryBackend, MemoryId, MemoryQuery, MemoryRecord,
+    MemoryResult, MemoryScope, MemoryTier, Relation, RrfOptions, SearchHit, SqliteVecVectorStore,
+    StoreMemory, TextEmbedder, VectorMemoryBackend, VectorMemoryConfig, DEFAULT_GRAPH_HOPS,
 };
 use artesian_test_support::TempDir;
 use futures_util::{future::BoxFuture, FutureExt};
@@ -95,6 +95,7 @@ impl MemoryBackend for MockMemoryBackend {
             record.user_id = memory.user_id;
             record.source = memory.source;
             record.confidence = memory.confidence;
+            record.relations = memory.relations;
             records.push(record.clone());
             Ok(record)
         }
@@ -142,6 +143,164 @@ async fn sqlite_vec_backend_satisfies_memory_contract() {
     .expect("backend should construct");
 
     assert_backend_contract(&backend).await;
+}
+
+async fn assert_entity_relation_graph<B: MemoryBackend>(backend: &B) {
+    backend
+        .store(StoreMemory {
+            node_id: Some("node:worker".to_string()),
+            relations: vec![Relation::new("CacheWorker", "owns", "RetryPolicy", "")],
+            ..StoreMemory::atom("Cache worker owns retry policy")
+        })
+        .await
+        .expect("store worker memory");
+    backend
+        .store(StoreMemory {
+            node_id: Some("node:policy".to_string()),
+            relations: vec![Relation::new(
+                "RetryPolicy",
+                "uses",
+                "ExponentialBackoff",
+                "",
+            )],
+            ..StoreMemory::atom("Retry policy uses exponential backoff")
+        })
+        .await
+        .expect("store policy memory");
+    backend
+        .store(StoreMemory {
+            node_id: Some("node:unrelated".to_string()),
+            ..StoreMemory::atom("Unrelated deployment window")
+        })
+        .await
+        .expect("store unrelated memory");
+
+    let by_entity = backend
+        .by_entity("RetryPolicy")
+        .await
+        .expect("by_entity should succeed");
+    let by_entity_nodes = by_entity
+        .iter()
+        .map(|record| record.node_id.as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        by_entity_nodes.contains(&"node:worker"),
+        "{by_entity_nodes:?}"
+    );
+    assert!(
+        by_entity_nodes.contains(&"node:policy"),
+        "{by_entity_nodes:?}"
+    );
+    assert!(
+        !by_entity_nodes.contains(&"node:unrelated"),
+        "{by_entity_nodes:?}"
+    );
+
+    let neighbors = backend
+        .neighbors("node:worker", DEFAULT_GRAPH_HOPS)
+        .await
+        .expect("neighbors should succeed");
+    let neighbor_nodes = neighbors
+        .iter()
+        .map(|record| record.node_id.as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        neighbor_nodes.contains(&"node:policy"),
+        "{neighbor_nodes:?}"
+    );
+    assert!(
+        !neighbor_nodes.contains(&"node:worker"),
+        "{neighbor_nodes:?}"
+    );
+}
+
+#[tokio::test]
+async fn files_backend_returns_relation_neighbors() {
+    let tempdir = TempDir::new("files-relations");
+    assert_entity_relation_graph(&FilesBackend::new(tempdir.path())).await;
+}
+
+#[tokio::test]
+async fn sqlite_vec_backend_returns_relation_neighbors() {
+    let store = SqliteVecVectorStore::in_memory().expect("sqlite-vec store should open");
+    let backend = VectorMemoryBackend::with_embedder(
+        store,
+        VectorMemoryConfig {
+            collection: "relations".to_string(),
+            dimensions: TEST_DIMENSIONS,
+            ..VectorMemoryConfig::new("relations")
+        },
+        Arc::new(TestEmbedder),
+    )
+    .expect("backend should construct");
+    assert_entity_relation_graph(&backend).await;
+}
+
+#[tokio::test]
+async fn relation_expansion_is_opt_in() {
+    let store = SqliteVecVectorStore::in_memory().expect("sqlite-vec store should open");
+    let backend = VectorMemoryBackend::with_embedder(
+        store,
+        VectorMemoryConfig {
+            collection: "expand-relations".to_string(),
+            dimensions: TEST_DIMENSIONS,
+            ..VectorMemoryConfig::new("expand-relations")
+        },
+        Arc::new(TestEmbedder),
+    )
+    .expect("backend should construct");
+
+    backend
+        .store(StoreMemory {
+            node_id: Some("node:anchor".to_string()),
+            relations: vec![Relation::new("AnchorMemory", "links", "SharedEntity", "")],
+            ..StoreMemory::atom("needle anchor memory")
+        })
+        .await
+        .expect("store anchor");
+    backend
+        .store(StoreMemory {
+            node_id: Some("node:neighbor".to_string()),
+            relations: vec![Relation::new(
+                "SharedEntity",
+                "explains",
+                "NeighborFact",
+                "",
+            )],
+            ..StoreMemory::atom("neighbor fact without the query token")
+        })
+        .await
+        .expect("store neighbor");
+
+    let query = MemoryQuery::new("needle").with_limit(1);
+    let default_hits = backend
+        .find(query.clone())
+        .await
+        .expect("default find should succeed");
+    let repeated_default_hits = backend
+        .find(query)
+        .await
+        .expect("second default find should succeed");
+    assert_eq!(
+        serde_json::to_value(&default_hits).expect("hits should serialize"),
+        serde_json::to_value(&repeated_default_hits).expect("hits should serialize"),
+        "default retrieval must be unchanged without expansion"
+    );
+    assert_eq!(default_hits.len(), 1);
+    assert_eq!(default_hits[0].record.node_id, "node:anchor");
+
+    let expanded = expand_hits_with_neighbors(&backend, default_hits, DEFAULT_GRAPH_HOPS)
+        .await
+        .expect("expansion should succeed");
+    let expanded_nodes = expanded
+        .iter()
+        .map(|hit| hit.record.node_id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(expanded_nodes[0], "node:anchor");
+    assert!(
+        expanded_nodes.contains(&"node:neighbor"),
+        "{expanded_nodes:?}"
+    );
 }
 
 /// A tag filter is an explicit selection (e.g. always-inject project invariants), so a
@@ -239,6 +398,7 @@ async fn assert_provenance_round_trip<B: MemoryBackend>(backend: &B) {
             user_id: None,
             source: Some("docs/provenance.md".to_string()),
             confidence: Some(0.82),
+            relations: Vec::new(),
         })
         .await
         .expect("store should succeed");
@@ -262,6 +422,22 @@ async fn assert_provenance_round_trip<B: MemoryBackend>(backend: &B) {
         .expect("node should exist");
     assert_eq!(drill_down.source.as_deref(), Some("docs/provenance.md"));
     assert_eq!(drill_down.confidence, Some(0.82));
+}
+
+#[tokio::test]
+async fn default_graph_methods_are_empty_for_non_indexing_backends() {
+    let backend = MockMemoryBackend::default();
+
+    assert!(backend
+        .neighbors("node:any", 1)
+        .await
+        .expect("neighbors should succeed")
+        .is_empty());
+    assert!(backend
+        .by_entity("AnyEntity")
+        .await
+        .expect("by_entity should succeed")
+        .is_empty());
 }
 
 #[tokio::test]
@@ -303,6 +479,7 @@ async fn vector_collections_isolate_two_projects_on_one_store() {
             user_id: Some("user-a".to_string()),
             source: None,
             confidence: None,
+            relations: Vec::new(),
         })
         .await
         .expect("project A store should succeed");
@@ -321,6 +498,7 @@ async fn vector_collections_isolate_two_projects_on_one_store() {
             user_id: Some("user-b".to_string()),
             source: None,
             confidence: None,
+            relations: Vec::new(),
         })
         .await
         .expect("project B store should succeed");
@@ -356,6 +534,7 @@ async fn assert_backend_contract<B: MemoryBackend>(backend: &B) {
             user_id: None,
             source: None,
             confidence: None,
+            relations: Vec::new(),
         })
         .await
         .expect("store should succeed");
@@ -375,6 +554,7 @@ async fn assert_backend_contract<B: MemoryBackend>(backend: &B) {
             user_id: None,
             source: None,
             confidence: None,
+            relations: Vec::new(),
         })
         .await
         .expect("store should succeed");
@@ -424,6 +604,7 @@ async fn assert_backend_contract<B: MemoryBackend>(backend: &B) {
             user_id: None,
             source: None,
             confidence: None,
+            relations: Vec::new(),
         })
         .await
         .expect("tenant store should succeed");
@@ -442,6 +623,7 @@ async fn assert_backend_contract<B: MemoryBackend>(backend: &B) {
             user_id: None,
             source: None,
             confidence: None,
+            relations: Vec::new(),
         })
         .await
         .expect("tenant store should succeed");
@@ -527,6 +709,7 @@ async fn large_content_is_chunked_so_recall_stays_bounded() {
             user_id: None,
             source: None,
             confidence: None,
+            relations: Vec::new(),
         })
         .await
         .expect("store should succeed");
@@ -627,6 +810,7 @@ async fn single_chunk_records_are_unaffected_by_small_to_big() {
                 user_id: None,
                 source: None,
                 confidence: None,
+                relations: Vec::new(),
             })
             .await
             .expect("store should succeed");
