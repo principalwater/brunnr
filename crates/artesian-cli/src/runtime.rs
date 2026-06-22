@@ -114,17 +114,34 @@ pub async fn shutdown_signal() -> Result<&'static str> {
 }
 
 pub fn open_memory_backend(config: &MemoryConfig) -> Result<Arc<dyn MemoryBackend>> {
+    open_memory_backend_inner(config, false)
+}
+
+/// Open a memory backend with deterministic relation extraction enabled.
+///
+/// Relation extraction is cheap (no LLM) and builds `mentions` links between entities found in
+/// each record's content and tags.  The standard `open_memory_backend` leaves it off (the
+/// default); import paths call this variant so every ingested chunk arrives pre-linked.
+pub fn open_memory_backend_with_relations(config: &MemoryConfig) -> Result<Arc<dyn MemoryBackend>> {
+    open_memory_backend_inner(config, true)
+}
+
+fn open_memory_backend_inner(
+    config: &MemoryConfig,
+    relation_extraction: bool,
+) -> Result<Arc<dyn MemoryBackend>> {
     match config.backend {
         MemoryBackendKind::Files => Ok(Arc::new(FilesBackend::new(&config.root))),
         MemoryBackendKind::SqliteVec => {
             let store = SqliteVecVectorStore::open(SqliteVecVectorStoreConfig::new(sqlite_path(
                 &config.root,
             )))?;
-            let backend =
-                VectorMemoryBackend::new(store, VectorMemoryConfig::new(&config.collection))?;
+            let vector_config = VectorMemoryConfig::new(&config.collection)
+                .with_relation_extraction(relation_extraction);
+            let backend = VectorMemoryBackend::new(store, vector_config)?;
             Ok(finish_vector_backend(backend, config))
         }
-        MemoryBackendKind::Qdrant => open_qdrant_backend(config),
+        MemoryBackendKind::Qdrant => open_qdrant_backend_inner(config, relation_extraction),
         MemoryBackendKind::TencentDb => bail!("TencentDB backend is not available yet"),
     }
 }
@@ -238,7 +255,10 @@ fn spawn_registry_dir(config: &ArtesianConfig, repo_root: &Path) -> PathBuf {
 }
 
 #[cfg(feature = "qdrant")]
-fn open_qdrant_backend(config: &MemoryConfig) -> Result<Arc<dyn MemoryBackend>> {
+fn open_qdrant_backend_inner(
+    config: &MemoryConfig,
+    relation_extraction: bool,
+) -> Result<Arc<dyn MemoryBackend>> {
     let url = config
         .qdrant_url
         .clone()
@@ -253,12 +273,17 @@ fn open_qdrant_backend(config: &MemoryConfig) -> Result<Arc<dyn MemoryBackend>> 
         vector_config.api_key = env::var(env_name).ok();
     }
     let store = QdrantVectorStore::connect(vector_config)?;
-    let backend = VectorMemoryBackend::new(store, VectorMemoryConfig::new(&config.collection))?;
+    let mem_config =
+        VectorMemoryConfig::new(&config.collection).with_relation_extraction(relation_extraction);
+    let backend = VectorMemoryBackend::new(store, mem_config)?;
     Ok(finish_vector_backend(backend, config))
 }
 
 #[cfg(not(feature = "qdrant"))]
-fn open_qdrant_backend(_config: &MemoryConfig) -> Result<Arc<dyn MemoryBackend>> {
+fn open_qdrant_backend_inner(
+    _config: &MemoryConfig,
+    _relation_extraction: bool,
+) -> Result<Arc<dyn MemoryBackend>> {
     bail!("Qdrant backend requires building artesian-cli with the qdrant feature")
 }
 

@@ -78,8 +78,8 @@ mod import;
 mod runtime;
 use import::{import_directory, ImportOptions};
 use runtime::{
-    build_orchestrator, load_config, open_memory_backend, process_supervisor_from_config,
-    shutdown_signal,
+    build_orchestrator, load_config, open_memory_backend, open_memory_backend_with_relations,
+    process_supervisor_from_config, shutdown_signal,
 };
 
 #[derive(Debug, Parser)]
@@ -200,6 +200,16 @@ enum Command {
         backend: Option<BackendArg>,
         #[arg(long)]
         user_id: Option<String>,
+        /// Disable deterministic entity-relation extraction during import.
+        /// By default, import extracts `mentions` relations from each chunk's content and tags
+        /// (no LLM required), so `neighbors` and `by_entity` return links immediately.
+        #[arg(long)]
+        no_link: bool,
+        /// After import, run the LLM consolidation pass (same as `artesian consolidate`).
+        /// Requires an LLM configured under `[acc.compressor]` or `[acc.judge]` in artesian.toml.
+        /// If no LLM is configured, prints a note and continues without failing.
+        #[arg(long)]
+        consolidate: bool,
     },
     Onboard {
         project: String,
@@ -220,6 +230,16 @@ enum Command {
         user_id: Option<String>,
         #[arg(long, default_value = DEFAULT_CONFIG)]
         config: PathBuf,
+        /// Disable deterministic entity-relation extraction during import.
+        /// By default, import extracts `mentions` relations from each chunk's content and tags
+        /// (no LLM required), so `neighbors` and `by_entity` return links immediately.
+        #[arg(long)]
+        no_link: bool,
+        /// After import, run the LLM consolidation pass (same as `artesian consolidate`).
+        /// Requires an LLM configured under `[acc.compressor]` or `[acc.judge]` in artesian.toml.
+        /// If no LLM is configured, prints a note and continues without failing.
+        #[arg(long)]
+        consolidate: bool,
     },
     Consolidate {
         #[arg(long, default_value = DEFAULT_CONFIG)]
@@ -997,7 +1017,20 @@ async fn main() -> Result<()> {
             root,
             backend,
             user_id,
-        } => backfill(directory, config, root, backend, user_id).await,
+            no_link,
+            consolidate,
+        } => {
+            backfill(
+                directory,
+                config,
+                root,
+                backend,
+                user_id,
+                no_link,
+                consolidate,
+            )
+            .await
+        }
         Command::Onboard {
             project,
             directory,
@@ -1009,6 +1042,8 @@ async fn main() -> Result<()> {
             qdrant_api_key_env,
             user_id,
             config,
+            no_link,
+            consolidate,
         } => {
             let memory_root = project_memory_root(memory_root, Some(&project));
             let collection = project_collection(collection, Some(&project));
@@ -1027,6 +1062,8 @@ async fn main() -> Result<()> {
                 },
                 config,
                 user_id,
+                no_link,
+                consolidate,
             )
             .await
         }
@@ -3123,12 +3160,21 @@ async fn backfill(
     root: PathBuf,
     backend: Option<BackendArg>,
     user_id: Option<String>,
+    no_link: bool,
+    run_consolidate: bool,
 ) -> Result<()> {
+    let artesian_root = root.clone();
     let memory = memory_config_for_command(&config, root, backend)?;
     if memory.backend == MemoryBackendKind::Qdrant {
         preflight_qdrant_memory(&memory).await?;
     }
-    let backend = open_memory_backend(&memory)?;
+    // Deterministic relation extraction is on by default: cheap, no LLM, and makes
+    // `neighbors`/`by_entity` return links immediately after import.  Pass `--no-link` to opt out.
+    let backend = if no_link {
+        open_memory_backend(&memory)?
+    } else {
+        open_memory_backend_with_relations(&memory)?
+    };
     let task_store = VectorTaskStore::new(FilesTaskStore::new(&memory.root), backend.clone());
     let report = import_directory(
         ImportOptions {
@@ -3144,17 +3190,29 @@ async fn backfill(
     .await?;
     let imported = report.memory_imported + report.task_imported;
     let skipped_duplicates = report.memory_skipped_duplicates + report.task_skipped_duplicates;
+    let link_note = if no_link {
+        " (relation extraction disabled via --no-link)"
+    } else {
+        " (entity relations extracted)"
+    };
     println!(
-        "backfill scanned={} imported={} skipped_duplicates={} failed={}",
+        "backfill scanned={} imported={} skipped_duplicates={} failed={}{}",
         report.scanned,
         imported,
         skipped_duplicates,
-        report.failed.len()
+        report.failed.len(),
+        link_note,
     );
     println!("{}", serde_json::to_string_pretty(&report)?);
-    println!(
-        "next best step: run `artesian consolidate` when you want the opt-in LLM semantic pass"
-    );
+    if run_consolidate {
+        println!("running consolidation pass (--consolidate)…");
+        consolidate_after_import(&config, artesian_root).await;
+    } else {
+        println!(
+            "next: run `artesian consolidate --allow-llm` to build higher-tier linked memory with an LLM\n\
+             (entity relations were extracted automatically; consolidate adds LLM semantic grouping)"
+        );
+    }
     Ok(())
 }
 
@@ -3164,6 +3222,8 @@ async fn onboard(
     options: InitOptions,
     config_path: PathBuf,
     user_id: Option<String>,
+    no_link: bool,
+    run_consolidate: bool,
 ) -> Result<()> {
     init(options, true).await?;
     let memory = load_config(&config_path)
@@ -3174,7 +3234,12 @@ async fn onboard(
                 .expect("init config should parse")
                 .memory
         });
-    let backend = open_memory_backend(&memory)?;
+    // Deterministic relation extraction is on by default (cheap, no LLM).  --no-link opts out.
+    let backend = if no_link {
+        open_memory_backend(&memory)?
+    } else {
+        open_memory_backend_with_relations(&memory)?
+    };
     let task_store = VectorTaskStore::new(FilesTaskStore::new(&memory.root), backend.clone());
     let report = import_directory(
         ImportOptions {
@@ -3193,14 +3258,26 @@ async fn onboard(
         .await
         .map(|hits| hits.len())
         .unwrap_or_default();
+    let link_note = if no_link {
+        " (relation extraction disabled via --no-link)"
+    } else {
+        " (entity relations extracted)"
+    };
     println!(
-        "onboard project={} collection={} root={} verification_hits={}",
-        project, memory.collection, memory.root, verification_hits
+        "onboard project={} collection={} root={} verification_hits={}{}",
+        project, memory.collection, memory.root, verification_hits, link_note
     );
     println!("{}", serde_json::to_string_pretty(&report)?);
-    println!(
-        "next best step: run `artesian consolidate` when you want the opt-in LLM semantic pass"
-    );
+    if run_consolidate {
+        println!("running consolidation pass (--consolidate)…");
+        // Use the memory root as the artesian root; consolidate reads it from config anyway.
+        consolidate_after_import(&config_path, PathBuf::from(&memory.root)).await;
+    } else {
+        println!(
+            "next: run `artesian consolidate --allow-llm` to build higher-tier linked memory with an LLM\n\
+             (entity relations were extracted automatically; consolidate adds LLM semantic grouping)"
+        );
+    }
     Ok(())
 }
 
@@ -3355,6 +3432,36 @@ async fn consolidate(config_path: PathBuf, root: PathBuf, allow_llm: bool) -> Re
         .write_all(entry.as_bytes())?;
 
     Ok(())
+}
+
+/// Run a consolidation pass after import (`--consolidate` flag on backfill/onboard).
+///
+/// `artesian_root` is the `--root` value (`.artesian` by default), the same parameter that the
+/// standalone `artesian consolidate` command accepts.
+///
+/// Never fails: if the config is missing, the backend can't be opened, or no LLM is wired, we
+/// print a clear note and return normally.  The caller (backfill/onboard) must not propagate
+/// any error from here — import already succeeded.
+async fn consolidate_after_import(config_path: &Path, artesian_root: PathBuf) {
+    // Check whether an LLM is configured; if not, print a note and return.
+    let acc = load_config(config_path)
+        .map(|cfg| cfg.acc)
+        .unwrap_or_default();
+    let llm_available = acc.compressor.is_some() || acc.judge.is_some();
+    if !llm_available {
+        println!(
+            "note: --consolidate skipped — no LLM configured under [acc.compressor] or \
+             [acc.judge] in artesian.toml.\n\
+             To enable LLM consolidation, add an endpoint and re-run \
+             `artesian consolidate --allow-llm`."
+        );
+        return;
+    }
+
+    // Run the same structural pass as `artesian consolidate --allow-llm`.
+    if let Err(error) = consolidate(config_path.to_path_buf(), artesian_root, true).await {
+        println!("note: --consolidate pass encountered an error (import succeeded): {error}");
+    }
 }
 
 fn read_index_slice(root: &str, index_chars: usize) -> Result<Option<String>> {

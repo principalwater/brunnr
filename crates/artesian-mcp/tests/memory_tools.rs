@@ -13,8 +13,8 @@ use aquifer::{
 use artesian_core::{AgentBinding, AgentCatalog, AgentCatalogEntry, AgentModel, Mode, Role};
 use artesian_mcp::{
     AnchorSetRequest, AnswerRequest, BindRequest, CommitRequest, DelegateRequest, FindRequest,
-    MemoryServer, RelationRequest, SessionCheckpointRequest, SessionResumeRequest,
-    StoreRequest, TeamCreateRequest, TeamMessageKindRequest, TeamMessageRequest, TeamSpawnRequest,
+    MemoryServer, RelationRequest, SessionCheckpointRequest, SessionResumeRequest, StoreRequest,
+    TeamCreateRequest, TeamMessageKindRequest, TeamMessageRequest, TeamSpawnRequest,
     TeamStatusRequest, TeamTaskAddRequest, TeamTaskClaimRequest, TeamTaskCompleteRequest,
     ToolsFindRequest,
 };

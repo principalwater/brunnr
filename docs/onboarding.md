@@ -50,7 +50,29 @@ artesian memory context "what matters now"
 `backfill` is robust: a bad file is skipped and reported, not fatal. Markdown is section-chunked
 by heading, an OKF `index.md` catalog is generated, task/status markdown is routed into Headrace, and
 the command prints a JSON summary with `{scanned, imported, skipped_duplicates, failed}` counts.
-After import it prints the next opt-in step, `artesian consolidate`, for LLM semantic consolidation.
+
+**Linked memory by default.** `backfill` and `onboard` now run deterministic entity-relation
+extraction on every chunk at import time — no LLM required. Each chunk gets lightweight `mentions`
+relations derived from camelCase/PascalCase identifiers, backtick-quoted terms, ALL-CAPS acronyms,
+and tags. This means `memory neighbors` and `memory by_entity` return links immediately after
+import. Use `--no-link` to opt out (e.g. for a corpus with no named entities).
+
+**Recommended import flow for fully linked memory:**
+
+```shell
+# Step 1 — import with relations on by default (entity links extracted automatically):
+artesian backfill ./memory-export
+
+# Step 2 — optional LLM semantic pass: groups near-duplicates and builds higher-tier structure.
+# Requires [acc.compressor] or [acc.judge] in artesian.toml (any Claude / local Ollama endpoint).
+artesian consolidate --allow-llm
+
+# Or combine both steps in one command (consolidate prints a note and skips if no LLM is found):
+artesian backfill ./memory-export --consolidate
+```
+
+The `consolidate` step is always additive and safe to re-run. Without it, entity-relation links are
+still present and `memory.find` + `neighbors` work — consolidate only adds LLM semantic grouping.
 
 For a non-expert second project/user on the same Qdrant, use the wrapper:
 
@@ -150,8 +172,11 @@ without breaking anything**.
    `artesian migrate` rather than mixing vector spaces.
 4. Backfill the project's existing memory/tasks into the OKF bundle and selected backend:
    `artesian backfill <path>` (idempotent, content-hash dedup; never deletes the originals).
+   Relations are extracted automatically — no LLM needed. To opt out: `--no-link`.
+   To also run LLM consolidation in one step (requires [acc.compressor/judge]): `--consolidate`.
 5. Verify: `artesian memory store "<probe>"` then `artesian memory find "<probe>"` returns it; report
-   the backend, collection, and counts back to the operator.
+   the backend, collection, and counts back to the operator. Optionally verify link quality with
+   `artesian memory neighbors <node_id>` or `artesian memory by_entity <entity>`.
 6. Report what changed (config entries added, records backfilled) and what was left untouched.
 
 **Hard guardrails for the agent (do NOT violate):**
@@ -218,13 +243,19 @@ Steps:
    curl -fsS -H "api-key: $QDRANT_API_KEY" "$QDRANT_URL/healthz" && echo " qdrant ok"
 
 3) Set up + import the first directory (writes ~/artesian/artesian.toml, registers the
-   artesian-memory MCP server for Codex/Zed/Claude Code, and recursively imports the directory):
+   artesian-memory MCP server for Codex/Zed/Claude Code, and recursively imports the directory).
+   Entity relations are extracted automatically (no LLM); pass --no-link to opt out:
    mkdir -p ~/artesian && cd ~/artesian
    artesian onboard "$COLLECTION" "${DIRS[0]}" --collection "$COLLECTION" "${BACKEND_ARGS[@]}"
 
-4) Import the remaining directories (recursive, idempotent):
+4) Import the remaining directories (recursive, idempotent, entity relations on by default):
    cd ~/artesian
    for d in "${DIRS[@]:1}"; do artesian backfill "$d"; done
+
+   Optional — run the LLM consolidation pass after all directories are imported.
+   Requires ANTHROPIC_API_KEY or another LLM configured in artesian.toml.
+   Without it, entity links are still present; consolidate only adds semantic grouping:
+   artesian consolidate --allow-llm
 
 5) Verify:
    artesian memory find "a topic from the notes" --limit 5
