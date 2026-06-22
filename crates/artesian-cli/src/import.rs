@@ -30,6 +30,8 @@ pub struct ImportOptions {
     pub directory: PathBuf,
     pub okf_root: PathBuf,
     pub user_id: Option<String>,
+    /// Emit per-file progress to stderr (stdout stays reserved for the machine-readable summary).
+    pub progress: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -68,21 +70,26 @@ pub async fn import_directory(
     let mut report = ImportReport::default();
     let mut catalog = Vec::new();
 
-    for path in paths {
+    let total = paths.len();
+    if options.progress {
+        eprintln!(
+            "importing {total} file(s) from {}",
+            options.directory.display()
+        );
+    }
+
+    for (idx, path) in paths.iter().enumerate() {
         report.scanned += 1;
-        if FilesTaskStore::is_task_like_path(&path) {
-            import_task_path(
-                &options.directory,
-                &path,
-                task_store,
-                &mut report,
-                &mut catalog,
-            )
-            .await;
+        let before_imported = report.memory_imported + report.task_imported;
+        let before_dups = report.memory_skipped_duplicates + report.task_skipped_duplicates;
+        let before_failed = report.failed.len();
+        let is_task = FilesTaskStore::is_task_like_path(path);
+        if is_task {
+            import_task_path(&options.directory, path, task_store, &mut report, &mut catalog).await;
         } else {
             import_memory_path(
                 &options.directory,
-                &path,
+                path,
                 primary_memory.as_ref(),
                 okf_memory
                     .as_deref()
@@ -92,6 +99,40 @@ pub async fn import_directory(
                 &mut catalog,
             )
             .await;
+        }
+        if options.progress {
+            let imported = (report.memory_imported + report.task_imported) - before_imported;
+            let dups =
+                (report.memory_skipped_duplicates + report.task_skipped_duplicates) - before_dups;
+            let outcome = if report.failed.len() > before_failed {
+                let reason = report
+                    .failed
+                    .last()
+                    .map(|failure| failure.reason.as_str())
+                    .unwrap_or("error");
+                format!("FAILED: {}", reason.chars().take(100).collect::<String>())
+            } else if is_task {
+                if imported > 0 {
+                    "task imported".to_string()
+                } else {
+                    "task (duplicate)".to_string()
+                }
+            } else if imported > 0 && dups > 0 {
+                format!("{imported} imported, {dups} duplicate")
+            } else if imported > 0 {
+                format!("{imported} imported")
+            } else if dups > 0 {
+                format!("{dups} duplicate")
+            } else {
+                "no records".to_string()
+            };
+            eprintln!(
+                "[{}/{}] {} — {}",
+                idx + 1,
+                total,
+                catalog_path(&options.directory, path),
+                outcome
+            );
         }
     }
 
