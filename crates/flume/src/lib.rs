@@ -16,7 +16,7 @@ use artesian_core::{
 };
 use artesian_process_agent::{
     validate_binding_model, GcOptions, ProcessAgent, ProcessAgentConfig, ProcessSupervisor,
-    ReapReport,
+    ReapReport, WorkerEvent,
 };
 pub use artesian_process_agent::{GcOptions as TeamGcOptions, ReapReport as TeamReapReport};
 use chrono::Utc;
@@ -25,6 +25,7 @@ use headrace::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tokio::sync::mpsc;
 
 #[derive(Debug, thiserror::Error)]
 pub enum FlumeError {
@@ -409,6 +410,17 @@ impl TeamMessageKind {
 pub struct TeamMessageOutcome {
     pub event: EventEnvelope,
     pub response: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub worker_events: Vec<TeamWorkerEvent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TeamWorkerEvent {
+    pub team_id: String,
+    pub teammate: String,
+    pub kind: String,
+    pub text: String,
+    pub raw: String,
 }
 
 #[derive(Debug, Clone)]
@@ -600,6 +612,14 @@ impl TeamRuntime {
     }
 
     pub async fn message(&mut self, request: TeamMessage) -> FlumeResult<TeamMessageOutcome> {
+        self.message_with_worker_events(request, None).await
+    }
+
+    pub async fn message_with_worker_events(
+        &mut self,
+        request: TeamMessage,
+        event_sender: Option<mpsc::UnboundedSender<TeamWorkerEvent>>,
+    ) -> FlumeResult<TeamMessageOutcome> {
         let correlation_id = request
             .task_id
             .clone()
@@ -628,20 +648,24 @@ impl TeamRuntime {
                     .insert(task_id.clone());
             }
         }
-        let response = if request.execute {
+        let (response, worker_events) = if request.execute {
             let Some(to) = request.to.as_ref() else {
                 return Err(FlumeError::TeammateNotFound(
                     "execute requires a target teammate".to_string(),
                 ));
             };
-            Some(
-                self.execute_teammate(&request.team_id, to, &request.content)
-                    .await?,
-            )
+            let execution = self
+                .execute_teammate(&request.team_id, to, &request.content, event_sender)
+                .await?;
+            (Some(execution.response), execution.events)
         } else {
-            None
+            (None, Vec::new())
         };
-        Ok(TeamMessageOutcome { event, response })
+        Ok(TeamMessageOutcome {
+            event,
+            response,
+            worker_events,
+        })
     }
 
     pub fn status(&self, team_id: &str) -> FlumeResult<TeamRecord> {
@@ -682,7 +706,8 @@ impl TeamRuntime {
         team_id: &str,
         teammate_name: &str,
         content: &str,
-    ) -> FlumeResult<String> {
+        event_sender: Option<mpsc::UnboundedSender<TeamWorkerEvent>>,
+    ) -> FlumeResult<TeamExecution> {
         let team = self.team(team_id)?;
         let teammate = team
             .teammates
@@ -697,20 +722,57 @@ impl TeamRuntime {
                     .unwrap_or_else(|| "paused".to_string()),
             });
         }
-        let process = self.process_agent(&teammate.binding);
+        let definition = teammate.definition.clone();
+        let binding = teammate.binding.clone();
+        let process = self.process_agent(&binding);
         let session = process
             .spawn(SpawnRequest {
-                role: teammate.definition.kind,
-                agent: teammate.binding.agent.clone(),
-                model: teammate.binding.model.clone(),
+                role: definition.kind,
+                agent: binding.agent.clone(),
+                model: binding.model.clone(),
                 working_dir: Some(self.config.repo_root.display().to_string()),
             })
             .await?;
-        let prompt = format!("{}\n\n{}", teammate.definition.prompt_addendum, content);
-        let response = process
-            .send(&session, AgentMessage { content: prompt })
-            .await?;
-        Ok(redact_secrets(&response.content))
+        let prompt = format!("{}\n\n{}", definition.prompt_addendum, content);
+        let (worker_sender, mut worker_receiver) = mpsc::unbounded_channel();
+        let response = process.send_with_event_sender(
+            &session,
+            AgentMessage { content: prompt },
+            Some(worker_sender),
+        );
+        tokio::pin!(response);
+        let mut events = Vec::new();
+        let response = loop {
+            tokio::select! {
+                maybe_event = worker_receiver.recv() => {
+                    match maybe_event {
+                        Some(event) => push_worker_event(
+                            &mut events,
+                            event_sender.as_ref(),
+                            team_id,
+                            teammate_name,
+                            event,
+                        ),
+                        None => break response.await,
+                    }
+                }
+                response = &mut response => break response,
+            }
+        };
+        while let Some(event) = worker_receiver.recv().await {
+            push_worker_event(
+                &mut events,
+                event_sender.as_ref(),
+                team_id,
+                teammate_name,
+                event,
+            );
+        }
+        let response = response?;
+        Ok(TeamExecution {
+            response: redact_secrets(&response.content),
+            events,
+        })
     }
 
     fn requires_plan_approval(&self, team_id: &str, request: &TeamTaskClaim) -> FlumeResult<bool> {
@@ -934,6 +996,32 @@ impl TeammateState {
             paused_reason: self.paused_reason.clone(),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TeamExecution {
+    response: String,
+    events: Vec<TeamWorkerEvent>,
+}
+
+fn push_worker_event(
+    events: &mut Vec<TeamWorkerEvent>,
+    event_sender: Option<&mpsc::UnboundedSender<TeamWorkerEvent>>,
+    team_id: &str,
+    teammate: &str,
+    event: WorkerEvent,
+) {
+    let event = TeamWorkerEvent {
+        team_id: team_id.to_string(),
+        teammate: teammate.to_string(),
+        kind: event.kind,
+        text: redact_secrets(&event.text),
+        raw: redact_secrets(&event.raw),
+    };
+    if let Some(sender) = event_sender {
+        let _ = sender.send(event.clone());
+    }
+    events.push(event);
 }
 
 fn stable_team_id(name: &str) -> String {

@@ -21,8 +21,9 @@ use artesian_core::{
 use futures_util::{future::BoxFuture, stream, FutureExt};
 use serde::{Deserialize, Serialize};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     process::Command,
+    sync::mpsc,
     task::JoinHandle,
     time,
 };
@@ -150,6 +151,30 @@ impl ProcessAgent {
     pub fn config(&self) -> &ProcessAgentConfig {
         &self.config
     }
+
+    pub async fn send_with_event_sender(
+        &self,
+        session: &AgentSession,
+        message: AgentMessage,
+        event_sender: Option<mpsc::UnboundedSender<WorkerEvent>>,
+    ) -> AgentResult<AgentResponse> {
+        let context = self
+            .sessions
+            .lock()
+            .map_err(|error| AgentError::Session(error.to_string()))?
+            .get(&session.id)
+            .cloned()
+            .ok_or_else(|| AgentError::Session(format!("unknown session: {}", session.id)))?;
+        let output = run_process(&self.config, &context, &message.content, event_sender).await?;
+        Ok(AgentResponse { content: output })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkerEvent {
+    pub kind: String,
+    pub text: String,
+    pub raw: String,
 }
 
 impl Agent for ProcessAgent {
@@ -198,19 +223,8 @@ impl Agent for ProcessAgent {
         session: &AgentSession,
         message: AgentMessage,
     ) -> BoxFuture<'_, AgentResult<AgentResponse>> {
-        let session_id = session.id.clone();
-        async move {
-            let context = self
-                .sessions
-                .lock()
-                .map_err(|error| AgentError::Session(error.to_string()))?
-                .get(&session_id)
-                .cloned()
-                .ok_or_else(|| AgentError::Session(format!("unknown session: {session_id}")))?;
-            let output = run_process(&self.config, &context, &message.content).await?;
-            Ok(AgentResponse { content: output })
-        }
-        .boxed()
+        let session = session.clone();
+        async move { self.send_with_event_sender(&session, message, None).await }.boxed()
     }
 
     fn stream(
@@ -219,19 +233,45 @@ impl Agent for ProcessAgent {
         message: AgentMessage,
     ) -> BoxFuture<'_, AgentResult<AgentEventStream>> {
         let session = session.clone();
+        let agent = self.clone();
         async move {
-            let response = self.send(&session, message).await?;
-            Ok(Box::pin(stream::iter([
-                Ok(AgentEvent::Text(response.content)),
-                Ok(AgentEvent::Done),
-            ])) as AgentEventStream)
+            let (event_tx, event_rx) = mpsc::unbounded_channel();
+            let (worker_tx, mut worker_rx) = mpsc::unbounded_channel();
+            let forward_tx = event_tx.clone();
+            let forward = tokio::spawn(async move {
+                while let Some(event) = worker_rx.recv().await {
+                    if forward_tx
+                        .send(Ok(AgentEvent::Text(worker_event_log_line(&event))))
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            });
+            tokio::spawn(async move {
+                let result = agent
+                    .send_with_event_sender(&session, message, Some(worker_tx))
+                    .await;
+                let _ = forward.await;
+                match result {
+                    Ok(_) => {
+                        let _ = event_tx.send(Ok(AgentEvent::Done));
+                    }
+                    Err(error) => {
+                        let _ = event_tx.send(Err(error));
+                    }
+                }
+            });
+            Ok(Box::pin(stream::unfold(event_rx, |mut receiver| async {
+                receiver.recv().await.map(|event| (event, receiver))
+            })) as AgentEventStream)
         }
         .boxed()
     }
 
     fn capabilities(&self) -> AgentCapabilities {
         AgentCapabilities {
-            streaming: false,
+            streaming: true,
             tools: false,
             mcp: false,
         }
@@ -970,19 +1010,18 @@ async fn run_process(
     config: &ProcessAgentConfig,
     context: &SessionContext,
     prompt: &str,
+    event_sender: Option<mpsc::UnboundedSender<WorkerEvent>>,
 ) -> AgentResult<String> {
     let supervisor = config.supervisor();
     supervisor
         .ensure_spawn_capacity()
         .map_err(|error| AgentError::Unavailable(error.to_string()))?;
 
-    let mut command = Command::new(&config.command);
+    let invocation = build_invocation(config, context, prompt);
+    let mut command = Command::new(&invocation.command);
     configure_process_group(&mut command);
-    let mut prompt_was_arg = false;
-    for arg in &config.args {
-        let rendered = render_arg(arg, context, prompt);
-        prompt_was_arg |= arg.contains("{prompt}");
-        command.arg(rendered);
+    for arg in &invocation.args {
+        command.arg(arg);
     }
     if let Some(working_dir) = &context.working_dir {
         command.current_dir(working_dir);
@@ -998,7 +1037,7 @@ async fn run_process(
         .id()
         .ok_or_else(|| AgentError::Session("spawned process had no pid".to_string()))?;
     let pgid = process_group_id(pid);
-    let command_line = command_line(config);
+    let command_line = invocation.command_line();
     let working_dir = context
         .working_dir
         .as_ref()
@@ -1013,7 +1052,7 @@ async fn run_process(
         )
         .map_err(|error| AgentError::Session(error.to_string()))?;
 
-    if !prompt_was_arg && !prompt.is_empty() {
+    if invocation.prompt_on_stdin && !prompt.is_empty() {
         if let Some(mut stdin) = child.stdin.take() {
             // A failing one-shot worker can exit before reading its prompt, closing the
             // stdin read end; the resulting broken pipe is benign and OS-timing dependent
@@ -1028,7 +1067,10 @@ async fn run_process(
     }
     drop(child.stdin.take());
 
-    let stdout = child.stdout.take().map(read_pipe);
+    let stdout = child
+        .stdout
+        .take()
+        .map(|pipe| read_stdout(pipe, invocation.event_format, event_sender));
     let stderr = child.stderr.take().map(read_pipe);
     let deadline = config.timeout.min(config.max_lifetime);
     let status = match time::timeout(deadline, child.wait()).await {
@@ -1065,6 +1107,192 @@ async fn run_process(
         )));
     }
     Ok(text)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentKind {
+    Claude,
+    Codex,
+    Gemini,
+    Opencode,
+    Generic,
+}
+
+impl AgentKind {
+    fn from_config(config: &ProcessAgentConfig) -> Self {
+        let agent = normalize_agent_id(logical_agent_id(config));
+        let command = normalize_agent_id(command_basename(&config.command));
+        match (agent.as_str(), command.as_str()) {
+            ("claude" | "claude-code", "claude" | "claude-code") => Self::Claude,
+            ("codex", "codex") => Self::Codex,
+            ("gemini", "gemini") => Self::Gemini,
+            ("opencode", "opencode") => Self::Opencode,
+            _ => Self::Generic,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EventFormat {
+    Jsonl,
+    Text,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProcessInvocation {
+    command: String,
+    args: Vec<String>,
+    prompt_on_stdin: bool,
+    event_format: EventFormat,
+}
+
+impl ProcessInvocation {
+    fn command_line(&self) -> Vec<String> {
+        std::iter::once(self.command.clone())
+            .chain(self.args.iter().cloned())
+            .map(|part| redact_secrets(&part))
+            .collect()
+    }
+}
+
+fn build_invocation(
+    config: &ProcessAgentConfig,
+    context: &SessionContext,
+    prompt: &str,
+) -> ProcessInvocation {
+    match AgentKind::from_config(config) {
+        AgentKind::Claude => native_invocation(
+            config,
+            vec![
+                "-p".to_string(),
+                prompt.to_string(),
+                "--output-format".to_string(),
+                "stream-json".to_string(),
+                "--verbose".to_string(),
+                "--permission-mode".to_string(),
+                "acceptEdits".to_string(),
+            ],
+            context
+                .model
+                .as_ref()
+                .map(|model| vec!["--model".to_string(), model.clone()])
+                .unwrap_or_default(),
+            EventFormat::Jsonl,
+        ),
+        AgentKind::Codex => {
+            let workdir = context
+                .working_dir
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| ".".to_string());
+            let mut args = vec![
+                "exec".to_string(),
+                "--json".to_string(),
+                "--dangerously-bypass-approvals-and-sandbox".to_string(),
+                "-C".to_string(),
+                workdir,
+            ];
+            if let Some(effort) = codex_reasoning_effort(&config.args) {
+                args.extend(["-c".to_string(), format!("model_reasoning_effort={effort}")]);
+            }
+            if let Some(model) = &context.model {
+                args.extend(["-m".to_string(), model.clone()]);
+            }
+            args.push(prompt.to_string());
+            native_invocation(config, args, Vec::new(), EventFormat::Jsonl)
+        }
+        AgentKind::Gemini => native_invocation(
+            config,
+            vec!["-p".to_string(), prompt.to_string(), "--yolo".to_string()],
+            context
+                .model
+                .as_ref()
+                .map(|model| vec!["-m".to_string(), model.clone()])
+                .unwrap_or_default(),
+            EventFormat::Text,
+        ),
+        AgentKind::Opencode => native_invocation(
+            config,
+            vec!["run".to_string(), prompt.to_string()],
+            context
+                .model
+                .as_ref()
+                .map(|model| vec!["--model".to_string(), model.clone()])
+                .unwrap_or_default(),
+            EventFormat::Text,
+        ),
+        AgentKind::Generic => generic_invocation(config, context, prompt),
+    }
+}
+
+fn native_invocation(
+    config: &ProcessAgentConfig,
+    mut args: Vec<String>,
+    extra_args: Vec<String>,
+    event_format: EventFormat,
+) -> ProcessInvocation {
+    args.extend(extra_args);
+    ProcessInvocation {
+        command: config.command.clone(),
+        args,
+        prompt_on_stdin: false,
+        event_format,
+    }
+}
+
+fn generic_invocation(
+    config: &ProcessAgentConfig,
+    context: &SessionContext,
+    prompt: &str,
+) -> ProcessInvocation {
+    let mut prompt_was_arg = false;
+    let args = config
+        .args
+        .iter()
+        .map(|arg| {
+            prompt_was_arg |= arg.contains("{prompt}");
+            render_arg(arg, context, prompt)
+        })
+        .collect();
+    ProcessInvocation {
+        command: config.command.clone(),
+        args,
+        prompt_on_stdin: !prompt_was_arg,
+        event_format: EventFormat::Text,
+    }
+}
+
+fn command_basename(command: &str) -> &str {
+    Path::new(command)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(command)
+}
+
+fn codex_reasoning_effort(args: &[String]) -> Option<String> {
+    args.iter()
+        .filter_map(|arg| {
+            arg.strip_prefix("model_reasoning_effort=")
+                .or_else(|| arg.strip_prefix("reasoning_effort="))
+                .or_else(|| arg.strip_prefix("reasoning="))
+        })
+        .chain(
+            args.windows(2)
+                .filter(|pair| {
+                    matches!(
+                        pair.first().map(String::as_str),
+                        Some("-c" | "--config" | "--model-reasoning-effort" | "--reasoning-effort")
+                    )
+                })
+                .map(|pair| {
+                    pair[1]
+                        .strip_prefix("model_reasoning_effort=")
+                        .unwrap_or(pair[1].as_str())
+                }),
+        )
+        .map(str::trim)
+        .find(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 fn render_arg(template: &str, context: &SessionContext, prompt: &str) -> String {
@@ -1111,6 +1339,7 @@ fn age_since(now_ms: u128, then_ms: u128) -> Duration {
     Duration::from_millis(now_ms.saturating_sub(then_ms).min(u64::MAX as u128) as u64)
 }
 
+#[cfg(test)]
 fn command_line(config: &ProcessAgentConfig) -> Vec<String> {
     std::iter::once(config.command.clone())
         .chain(config.args.iter().cloned())
@@ -1230,6 +1459,114 @@ fn redact_key_value_token(input: &str, key: &str) -> String {
     }
     output.push_str(&input[cursor..]);
     output
+}
+
+fn worker_event_log_line(event: &WorkerEvent) -> String {
+    if event.text.trim().is_empty() {
+        event.raw.clone()
+    } else {
+        event.text.clone()
+    }
+}
+
+fn parse_stdout_event(format: EventFormat, line: &str) -> WorkerEvent {
+    let raw = trim_line_end(line);
+    match format {
+        EventFormat::Jsonl => parse_jsonl_event(raw).unwrap_or_else(|| raw_stdout_event(raw)),
+        EventFormat::Text => raw_stdout_event(raw),
+    }
+}
+
+fn parse_jsonl_event(line: &str) -> Option<WorkerEvent> {
+    let value = serde_json::from_str::<serde_json::Value>(line).ok()?;
+    let kind = value
+        .get("type")
+        .or_else(|| value.get("event"))
+        .or_else(|| value.get("kind"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("json")
+        .to_string();
+    let text = extract_json_text(&value).unwrap_or_else(|| kind.clone());
+    Some(WorkerEvent {
+        kind: redact_secrets(&kind),
+        text: redact_secrets(&text),
+        raw: redact_secrets(line),
+    })
+}
+
+fn raw_stdout_event(line: &str) -> WorkerEvent {
+    let text = redact_secrets(line);
+    WorkerEvent {
+        kind: "stdout".to_string(),
+        text: text.clone(),
+        raw: text,
+    }
+}
+
+fn extract_json_text(value: &serde_json::Value) -> Option<String> {
+    let mut parts = Vec::new();
+    collect_json_text(value, &mut parts);
+    (!parts.is_empty()).then(|| parts.join("\n"))
+}
+
+fn collect_json_text(value: &serde_json::Value, parts: &mut Vec<String>) {
+    match value {
+        serde_json::Value::String(text) => {
+            let text = text.trim();
+            if !text.is_empty() {
+                parts.push(text.to_string());
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_json_text(item, parts);
+            }
+        }
+        serde_json::Value::Object(object) => {
+            for key in [
+                "text", "content", "message", "delta", "summary", "result", "output",
+            ] {
+                if let Some(value) = object.get(key) {
+                    collect_json_text(value, parts);
+                }
+            }
+        }
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {}
+    }
+}
+
+fn trim_line_end(line: &str) -> &str {
+    line.trim_end_matches(['\r', '\n'])
+}
+
+fn read_stdout<T>(
+    pipe: T,
+    event_format: EventFormat,
+    event_sender: Option<mpsc::UnboundedSender<WorkerEvent>>,
+) -> JoinHandle<io::Result<Vec<u8>>>
+where
+    T: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    tokio::spawn(async move {
+        let mut reader = BufReader::new(pipe);
+        let mut bytes = Vec::new();
+        loop {
+            let mut line = Vec::new();
+            let count = reader.read_until(b'\n', &mut line).await?;
+            if count == 0 {
+                break;
+            }
+            bytes.extend_from_slice(&line);
+            if let Some(sender) = &event_sender {
+                let line = String::from_utf8_lossy(&line);
+                let event = parse_stdout_event(event_format, &line);
+                if !event.text.is_empty() {
+                    let _ = sender.send(event);
+                }
+            }
+        }
+        Ok(bytes)
+    })
 }
 
 fn read_pipe<T>(mut pipe: T) -> JoinHandle<io::Result<Vec<u8>>>
@@ -1539,6 +1876,114 @@ mod tests {
 
         assert_eq!(master_response.content.trim(), "master:claude-opus");
         assert_eq!(worker_response.content.trim(), "worker:claude-sonnet");
+    }
+
+    #[test]
+    fn native_agent_invocations_use_streaming_cli_args() {
+        let prompt = "Do bounded work.";
+        let claude_context = test_context("claude", Some("claude-sonnet"), None);
+        let claude = build_invocation(
+            &ProcessAgentConfig::new("claude").with_agent_id("claude"),
+            &claude_context,
+            prompt,
+        );
+        assert_eq!(
+            claude.args,
+            vec![
+                "-p",
+                prompt,
+                "--output-format",
+                "stream-json",
+                "--verbose",
+                "--permission-mode",
+                "acceptEdits",
+                "--model",
+                "claude-sonnet",
+            ]
+        );
+        assert_eq!(claude.event_format, EventFormat::Jsonl);
+        assert!(!claude.prompt_on_stdin);
+
+        let codex_context = test_context("codex", Some("gpt-5"), Some("/repo"));
+        let codex = build_invocation(
+            &ProcessAgentConfig::new("codex")
+                .with_agent_id("codex")
+                .with_args(vec!["model_reasoning_effort=xhigh".to_string()]),
+            &codex_context,
+            prompt,
+        );
+        assert_eq!(
+            codex.args,
+            vec![
+                "exec",
+                "--json",
+                "--dangerously-bypass-approvals-and-sandbox",
+                "-C",
+                "/repo",
+                "-c",
+                "model_reasoning_effort=xhigh",
+                "-m",
+                "gpt-5",
+                prompt,
+            ]
+        );
+        assert_eq!(codex.event_format, EventFormat::Jsonl);
+        assert!(!codex.prompt_on_stdin);
+
+        let gemini_context = test_context("gemini", Some("gemini-pro"), None);
+        let gemini = build_invocation(
+            &ProcessAgentConfig::new("gemini").with_agent_id("gemini"),
+            &gemini_context,
+            prompt,
+        );
+        assert_eq!(
+            gemini.args,
+            vec!["-p", prompt, "--yolo", "-m", "gemini-pro"]
+        );
+        assert_eq!(gemini.event_format, EventFormat::Text);
+        assert!(!gemini.prompt_on_stdin);
+
+        let opencode_context = test_context("opencode", Some("opencode-default"), None);
+        let opencode = build_invocation(
+            &ProcessAgentConfig::new("opencode").with_agent_id("opencode"),
+            &opencode_context,
+            prompt,
+        );
+        assert_eq!(
+            opencode.args,
+            vec!["run", prompt, "--model", "opencode-default"]
+        );
+        assert_eq!(opencode.event_format, EventFormat::Text);
+        assert!(!opencode.prompt_on_stdin);
+    }
+
+    #[test]
+    fn jsonl_stdout_lines_normalize_worker_events() {
+        let event = parse_stdout_event(
+            EventFormat::Jsonl,
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"hello sk-secret-value"}]}}"#,
+        );
+        assert_eq!(event.kind, "assistant");
+        assert_eq!(event.text, "hello [REDACTED]");
+        assert!(event.raw.contains("[REDACTED]"));
+        assert!(!event.raw.contains("sk-secret-value"));
+
+        let codex_event = parse_stdout_event(
+            EventFormat::Jsonl,
+            r#"{"type":"agent_message","message":"implementation complete"}"#,
+        );
+        assert_eq!(codex_event.kind, "agent_message");
+        assert_eq!(codex_event.text, "implementation complete");
+
+        let raw_event = parse_stdout_event(EventFormat::Jsonl, "plain progress\n");
+        assert_eq!(
+            raw_event,
+            WorkerEvent {
+                kind: "stdout".to_string(),
+                text: "plain progress".to_string(),
+                raw: "plain progress".to_string(),
+            }
+        );
     }
 
     #[tokio::test]
@@ -2075,6 +2520,15 @@ mod tests {
             })
             .await
             .expect("session should spawn")
+    }
+
+    fn test_context(agent: &str, model: Option<&str>, working_dir: Option<&str>) -> SessionContext {
+        SessionContext {
+            role: Role::Worker,
+            agent: agent.to_string(),
+            model: model.map(str::to_string),
+            working_dir: working_dir.map(PathBuf::from),
+        }
     }
 
     async fn wait_for_file(path: &Path) {

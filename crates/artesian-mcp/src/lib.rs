@@ -879,6 +879,8 @@ pub struct TeamMessageRequest {
 pub struct TeamMessageResponse {
     pub event: serde_json::Value,
     pub response: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub worker_events: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -1655,6 +1657,12 @@ Call when the project vision or current phase changes."
             event: serde_json::to_value(outcome.event)
                 .map_err(|error| ErrorData::internal_error(error.to_string(), None))?,
             response: outcome.response,
+            worker_events: outcome
+                .worker_events
+                .into_iter()
+                .map(serde_json::to_value)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| ErrorData::internal_error(error.to_string(), None))?,
         }))
     }
 

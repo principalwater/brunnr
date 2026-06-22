@@ -27,6 +27,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use flume::{
     load_role_definitions, role_summaries, TeamCreate, TeamGcOptions, TeamMessage, TeamMessageKind,
     TeamRuntime, TeamRuntimeConfig, TeamSpawn, TeamTaskAdd, TeamTaskClaim, TeamTaskComplete,
+    TeamWorkerEvent,
 };
 use headgate::{
     count_tokens, Headgate, HeadgateConfig, LifecycleEntry, MemoryRecallStore, RecallStore,
@@ -1642,18 +1643,39 @@ async fn team(command: TeamCommand) -> Result<()> {
         } => {
             let mut runtime = team_runtime(&config).await?;
             ensure_ephemeral_team(&mut runtime, &team_id);
+            let (event_sender, event_printer) = if execute {
+                let (sender, mut receiver) =
+                    tokio::sync::mpsc::unbounded_channel::<TeamWorkerEvent>();
+                let printer = tokio::spawn(async move {
+                    while let Some(event) = receiver.recv().await {
+                        for line in event.text.lines().filter(|line| !line.trim().is_empty()) {
+                            eprintln!("[worker:{}] {}", event.teammate, line);
+                        }
+                    }
+                });
+                (Some(sender), Some(printer))
+            } else {
+                (None, None)
+            };
             let outcome = runtime
-                .message(TeamMessage {
-                    team_id,
-                    from,
-                    to,
-                    kind: kind.into(),
-                    content,
-                    task_id,
-                    approved,
-                    execute,
-                })
-                .await?;
+                .message_with_worker_events(
+                    TeamMessage {
+                        team_id,
+                        from,
+                        to,
+                        kind: kind.into(),
+                        content,
+                        task_id,
+                        approved,
+                        execute,
+                    },
+                    event_sender,
+                )
+                .await;
+            if let Some(printer) = event_printer {
+                let _ = printer.await;
+            }
+            let outcome = outcome?;
             println!("{}", serde_json::to_string_pretty(&outcome)?);
         }
         TeamCommand::Status { team_id, config } => {
