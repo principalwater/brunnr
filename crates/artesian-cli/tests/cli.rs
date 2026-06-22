@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::process::Command;
+use std::{process::Command, sync::Arc};
 
+use aquifer::{FilesBackend, SessionKey, SessionStore};
 use artesian_test_support::TempDir;
+use headgate::{LifecycleEntry, SnapshotEntry, WorkingContextBundle, WorkingContextSnapshot};
 
 #[test]
 fn cli_memory_mode_round_trip_and_spawn_alias_work() {
@@ -166,6 +168,75 @@ fn cli_backfill_reports_bad_markdown_and_imports_tasks() {
         .expect("task list should run");
     assert!(list.status.success(), "{}", stderr(&list));
     assert!(stdout(&list).contains("Imported Task"));
+}
+
+#[test]
+fn cli_handoff_and_session_list_read_committed_session() {
+    let tempdir = TempDir::new("cli-session");
+    let binary = env!("CARGO_BIN_EXE_artesian");
+    let key = SessionKey::new(
+        Some("user-a".to_string()),
+        Some("session-cli".to_string()),
+        Some("task-cli".to_string()),
+    );
+    let entries = vec![SnapshotEntry::now(
+        "anchor-task",
+        "task-state",
+        "cli handoff restores this state",
+        1.0,
+    )];
+    let token_count = entries.iter().map(|entry| entry.tokens).sum();
+    let bundle = WorkingContextBundle::new(
+        WorkingContextSnapshot {
+            schema: vec!["task-state".to_string()],
+            budget_tokens: 4096,
+            token_count,
+            entries,
+        },
+        vec![LifecycleEntry::commit("anchor-task")],
+    );
+    let session = bundle
+        .to_ocf_session(&key, Some("codex".to_string()))
+        .expect("session should serialize");
+    tokio::runtime::Runtime::new()
+        .expect("runtime should start")
+        .block_on(async {
+            SessionStore::new(Arc::new(FilesBackend::new(tempdir.join(".artesian"))))
+                .store(session)
+                .await
+                .expect("session should store");
+        });
+
+    let handoff = Command::new(binary)
+        .args([
+            "handoff",
+            "session-cli",
+            "--user",
+            "user-a",
+            "--task",
+            "task-cli",
+        ])
+        .current_dir(tempdir.path())
+        .output()
+        .expect("handoff should run");
+    assert!(handoff.status.success(), "{}", stderr(&handoff));
+    let packet: serde_json::Value =
+        serde_json::from_str(&stdout(&handoff)).expect("handoff should print JSON");
+    assert_eq!(packet["session"]["handed_off_from"], "codex");
+    assert!(packet["restored_working_state"]
+        .as_str()
+        .expect("state should be text")
+        .contains("cli handoff restores this state"));
+
+    let list = Command::new(binary)
+        .args(["session", "list", "--user", "user-a"])
+        .current_dir(tempdir.path())
+        .output()
+        .expect("session list should run");
+    assert!(list.status.success(), "{}", stderr(&list));
+    let summaries: serde_json::Value =
+        serde_json::from_str(&stdout(&list)).expect("session list should print JSON");
+    assert_eq!(summaries[0]["key"]["session_id"], "session-cli");
 }
 
 fn stdout(output: &std::process::Output) -> String {

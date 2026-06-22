@@ -49,9 +49,9 @@ mod metrics;
 mod recall;
 
 pub use bundle::{
-    BundleError, BundleManifest, Decision, LifecycleEntry, LifecycleReason, QualifyRecord,
-    Resolution, SnapshotEntry, Status, WorkingContextBundle, WorkingContextSnapshot, BUNDLE_FORMAT,
-    BUNDLE_VERSION,
+    BundleError, BundleManifest, Decision, LifecycleEntry, LifecycleReason, OcfSession,
+    QualifyRecord, Resolution, SnapshotEntry, Status, WorkingContextBundle, WorkingContextSnapshot,
+    BUNDLE_FORMAT, BUNDLE_VERSION,
 };
 pub use ccs::{CcsSchema, CommittedContextState, CommittedEntry};
 pub use compressor::{Compressor, ExtractiveCompressor, NoopCompressor};

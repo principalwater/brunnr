@@ -13,9 +13,9 @@ use aquifer::{
 use artesian_core::{AgentBinding, AgentCatalog, AgentCatalogEntry, AgentModel, Mode, Role};
 use artesian_mcp::{
     AnchorSetRequest, AnswerRequest, BindRequest, CommitRequest, DelegateRequest, FindRequest,
-    MemoryServer, StoreRequest, TeamCreateRequest, TeamMessageKindRequest, TeamMessageRequest,
-    TeamSpawnRequest, TeamStatusRequest, TeamTaskAddRequest, TeamTaskClaimRequest,
-    TeamTaskCompleteRequest, ToolsFindRequest,
+    MemoryServer, SessionCheckpointRequest, SessionResumeRequest, StoreRequest, TeamCreateRequest,
+    TeamMessageKindRequest, TeamMessageRequest, TeamSpawnRequest, TeamStatusRequest,
+    TeamTaskAddRequest, TeamTaskClaimRequest, TeamTaskCompleteRequest, ToolsFindRequest,
 };
 use artesian_test_support::TempDir;
 use rmcp::handler::server::wrapper::Parameters;
@@ -150,6 +150,151 @@ async fn memory_anchor_tools_round_trip_with_files_backend() {
     assert_eq!(anchor.current_task, "implement anchor tools");
     assert_eq!(anchor.next_step, "verify MCP round trip");
     assert_eq!(anchor.last_decisions, vec!["append-only log"]);
+}
+
+#[tokio::test]
+async fn memory_session_checkpoint_and_resume_are_cross_agent() {
+    let tempdir = TempDir::new("mcp-session");
+    let server = MemoryServer::new(tempdir.path());
+
+    server
+        .memory_store(Parameters(StoreRequest {
+            content: "session scoped implementation detail".to_string(),
+            tags: None,
+            node_id: Some("node:session-detail".to_string()),
+            source: None,
+            confidence: None,
+            scope: Some(artesian_mcp::ScopeRequest::Session),
+            agent_id: Some("codex".to_string()),
+            session_id: Some("session-a".to_string()),
+            task_id: Some("task-a".to_string()),
+            user_id: Some("user-a".to_string()),
+        }))
+        .await
+        .expect("session memory should store");
+
+    let checkpoint = server
+        .memory_session_checkpoint(Parameters(SessionCheckpointRequest {
+            agent_id: "codex".to_string(),
+            session_id: Some("session-a".to_string()),
+            user_id: Some("user-a".to_string()),
+            task_id: Some("task-a".to_string()),
+            current_task: Some("continue item 7".to_string()),
+            next_step: Some("run handoff tests".to_string()),
+            plan_pointer: None,
+            last_decisions: Some(vec!["agent_id is producer metadata".to_string()]),
+            goal: Some("implementation detail".to_string()),
+            last_failed_check: Some("clippy failed before handoff".to_string()),
+            limit: Some(5),
+        }))
+        .await
+        .expect("checkpoint should succeed")
+        .0;
+
+    assert_eq!(checkpoint.summary.handed_off_from.as_deref(), Some("codex"));
+    assert_eq!(checkpoint.packet["session"]["handed_off_from"], "codex");
+
+    let resumed = server
+        .memory_session_resume(Parameters(SessionResumeRequest {
+            session_id: Some("session-a".to_string()),
+            user_id: Some("user-a".to_string()),
+            task_id: Some("task-a".to_string()),
+        }))
+        .await
+        .expect("resume should succeed")
+        .0;
+    let state = resumed.packet["restored_working_state"]
+        .as_str()
+        .expect("state should be text");
+    assert!(state.contains("continue item 7"), "{state}");
+    assert!(
+        state.contains("session scoped implementation detail"),
+        "{state}"
+    );
+    assert_eq!(
+        resumed.packet["last_failed_check"],
+        "clippy failed before handoff"
+    );
+}
+
+#[tokio::test]
+async fn memory_session_resume_does_not_cross_read_other_users() {
+    let tempdir = TempDir::new("mcp-session-isolation");
+    let server = MemoryServer::new(tempdir.path());
+
+    for (user, content) in [
+        ("user-a", "state that belongs to user a"),
+        ("user-b", "state that belongs to user b"),
+    ] {
+        server
+            .memory_session_checkpoint(Parameters(SessionCheckpointRequest {
+                agent_id: "codex".to_string(),
+                session_id: Some("same-session".to_string()),
+                user_id: Some(user.to_string()),
+                task_id: Some("same-task".to_string()),
+                current_task: Some(content.to_string()),
+                next_step: Some("continue".to_string()),
+                plan_pointer: None,
+                last_decisions: None,
+                goal: None,
+                last_failed_check: None,
+                limit: Some(5),
+            }))
+            .await
+            .expect("checkpoint should succeed");
+    }
+
+    let resumed = server
+        .memory_session_resume(Parameters(SessionResumeRequest {
+            session_id: Some("same-session".to_string()),
+            user_id: Some("user-a".to_string()),
+            task_id: Some("same-task".to_string()),
+        }))
+        .await
+        .expect("resume should succeed")
+        .0;
+    let state = resumed.packet["restored_working_state"]
+        .as_str()
+        .expect("state should be text");
+    assert!(state.contains("state that belongs to user a"), "{state}");
+    assert!(!state.contains("state that belongs to user b"), "{state}");
+}
+
+#[tokio::test]
+async fn memory_session_default_key_round_trips_when_identity_is_unset() {
+    let tempdir = TempDir::new("mcp-session-default");
+    let server = MemoryServer::new(tempdir.path());
+
+    server
+        .memory_session_checkpoint(Parameters(SessionCheckpointRequest {
+            agent_id: "codex".to_string(),
+            session_id: None,
+            user_id: None,
+            task_id: None,
+            current_task: Some("default session task".to_string()),
+            next_step: Some("resume default session".to_string()),
+            plan_pointer: None,
+            last_decisions: None,
+            goal: None,
+            last_failed_check: None,
+            limit: Some(5),
+        }))
+        .await
+        .expect("default checkpoint should succeed");
+
+    let resumed = server
+        .memory_session_resume(Parameters(SessionResumeRequest {
+            session_id: None,
+            user_id: None,
+            task_id: None,
+        }))
+        .await
+        .expect("default resume should succeed")
+        .0;
+    assert!(resumed.packet["restored_working_state"]
+        .as_str()
+        .expect("state should be text")
+        .contains("default session task"));
 }
 
 #[tokio::test]

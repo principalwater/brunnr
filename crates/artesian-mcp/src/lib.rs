@@ -15,8 +15,9 @@ use std::env;
 
 use aquifer::{
     AnchorAnchorStore, FilesBackend, MemoryBackend, MemoryQuery, MemoryScope, MemoryTier,
-    SearchHit, SessionAnchor, SqliteVecVectorStore, SqliteVecVectorStoreConfig, StoreMemory,
-    VectorMemoryBackend, VectorMemoryConfig,
+    SearchHit, SessionAnchor, SessionKey, SessionStore, SessionSummary, SqliteVecVectorStore,
+    SqliteVecVectorStoreConfig, StoreMemory, VectorMemoryBackend, VectorMemoryConfig,
+    SESSION_RECORD_TAG,
 };
 use artesian_core::{
     AccConfig, Agent, AgentBinding, AgentCatalog, AgentMessage, ArtesianConfig, MemoryBackendKind,
@@ -30,7 +31,10 @@ use flume::{
     load_role_definitions, role_summaries, TeamCreate, TeamGcOptions, TeamMessage, TeamMessageKind,
     TeamRuntime, TeamRuntimeConfig, TeamSpawn, TeamTaskAdd, TeamTaskClaim, TeamTaskComplete,
 };
-use headgate::{Headgate, HeadgateConfig, MemoryRecallStore, RecallStore};
+use headgate::{
+    count_tokens, Headgate, HeadgateConfig, LifecycleEntry, MemoryRecallStore, RecallStore,
+    Resolution, SnapshotEntry, WorkingContextBundle, WorkingContextSnapshot,
+};
 use headrace::{ClaimRequest, FilesTaskStore, NewTask, TaskStatus, TaskStore, TransitionTask};
 use rmcp::{
     handler::server::{
@@ -51,6 +55,8 @@ use aquifer::{QdrantVectorStore, QdrantVectorStoreConfig};
 const TOOL_INSTRUCTIONS: &str =
     "ALWAYS search the project memory before non-trivial work; store durable, reusable learnings.";
 const MASTER_ROLE_SKILL: &str = "In orchestrate/full mode, first call agents.list to inspect reachable agents, models, and role definitions. Use memory.context for compact project recall, create Flume teams with team.create/team.spawn when several teammates are useful, delegate bounded subtasks through team.task.* or orchestrate.delegate(worker), and gate accepted outcomes through the judge/master path before marking work done.";
+const INVARIANT_TAG: &str = "invariant";
+const GOAL_INVARIANT_LIMIT: usize = 8;
 const ORCHESTRATION_TOOLS: &[&str] = &[
     "agents.list",
     "orchestrate.bind",
@@ -606,6 +612,200 @@ fn find_hit(hit: SearchHit) -> FindHit {
     }
 }
 
+async fn checkpoint_anchor(
+    store: Option<&AnchorAnchorStore>,
+    key: &SessionKey,
+    request: &SessionCheckpointRequest,
+) -> Result<SessionAnchor, ErrorData> {
+    let existing = if let Some(store) = store {
+        store
+            .get_for_session(key)
+            .await
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?
+    } else {
+        None
+    };
+    let current_task = request
+        .current_task
+        .clone()
+        .or_else(|| existing.as_ref().map(|anchor| anchor.current_task.clone()))
+        .or_else(|| request.goal.clone())
+        .unwrap_or_else(|| format!("session {}", key.session_id));
+    let next_step = request
+        .next_step
+        .clone()
+        .or_else(|| existing.as_ref().map(|anchor| anchor.next_step.clone()))
+        .unwrap_or_else(|| "continue from the checkpoint".to_string());
+    let mut anchor = existing.unwrap_or_else(|| SessionAnchor::new(&current_task, &next_step));
+    anchor.current_task = current_task;
+    anchor.next_step = next_step;
+    if let Some(plan_pointer) = &request.plan_pointer {
+        anchor.plan_pointer = Some(plan_pointer.clone());
+    }
+    if let Some(last_decisions) = &request.last_decisions {
+        anchor.last_decisions = last_decisions.clone();
+    }
+    if let Some(store) = store {
+        store
+            .set_for_session(key, anchor)
+            .await
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))
+    } else {
+        Ok(anchor)
+    }
+}
+
+async fn session_scoped_hits(
+    backend: &dyn MemoryBackend,
+    key: &SessionKey,
+    query_text: &str,
+    limit: usize,
+) -> Result<Vec<SearchHit>, ErrorData> {
+    let mut query = MemoryQuery::new(query_text).with_limit(limit);
+    query.scope = Some(MemoryScope::Session);
+    query.user_id = Some(key.user_id.clone());
+    query.session_id = Some(key.session_id.clone());
+    query.task_id = Some(key.task_id.clone());
+    let hits = backend
+        .find(query)
+        .await
+        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?
+        .into_iter()
+        .filter(|hit| !hit.record.tags.iter().any(|tag| tag == SESSION_RECORD_TAG))
+        .collect();
+    Ok(hits)
+}
+
+async fn invariant_hits(
+    backend: &dyn MemoryBackend,
+    key: &SessionKey,
+    query_text: &str,
+) -> Result<Vec<SearchHit>, ErrorData> {
+    let mut query = MemoryQuery::new(query_text).with_limit(GOAL_INVARIANT_LIMIT);
+    query.tags = vec![INVARIANT_TAG.to_string()];
+    if !key.is_default() {
+        query.user_id = Some(key.user_id.clone());
+    }
+    backend
+        .find(query)
+        .await
+        .map_err(|error| ErrorData::internal_error(error.to_string(), None))
+}
+
+fn build_session_bundle(
+    anchor: Option<&SessionAnchor>,
+    session_hits: &[SearchHit],
+    invariant_hits: &[SearchHit],
+    last_failed_check: Option<&str>,
+) -> WorkingContextBundle {
+    let mut entries = Vec::new();
+    if let Some(anchor) = anchor {
+        push_entry(
+            &mut entries,
+            "anchor-task",
+            "task-state",
+            anchor.current_task.trim(),
+            1.0,
+            None,
+        );
+        push_entry(
+            &mut entries,
+            "anchor-next",
+            "task-state",
+            anchor.next_step.trim(),
+            1.0,
+            None,
+        );
+        if let Some(plan_pointer) = &anchor.plan_pointer {
+            push_entry(
+                &mut entries,
+                "anchor-plan",
+                "task-state",
+                plan_pointer.trim(),
+                1.0,
+                None,
+            );
+        }
+        for (index, decision) in anchor.last_decisions.iter().enumerate() {
+            push_entry(
+                &mut entries,
+                &format!("anchor-decision-{index}"),
+                "decision",
+                decision.trim(),
+                1.0,
+                None,
+            );
+        }
+    }
+    if let Some(last_failed_check) = last_failed_check {
+        push_entry(
+            &mut entries,
+            "last-failed-check",
+            "task-state",
+            last_failed_check.trim(),
+            1.0,
+            None,
+        );
+    }
+    for hit in invariant_hits {
+        push_memory_hit(&mut entries, hit, "constraint");
+    }
+    for hit in session_hits {
+        push_memory_hit(&mut entries, hit, "fact");
+    }
+    let token_count = entries.iter().map(|entry| entry.tokens).sum();
+    let lifecycle = entries
+        .iter()
+        .map(|entry| LifecycleEntry::commit(entry.id.as_str()))
+        .collect();
+    WorkingContextBundle::new(
+        WorkingContextSnapshot {
+            schema: vec![
+                "decision".to_string(),
+                "constraint".to_string(),
+                "fact".to_string(),
+                "task-state".to_string(),
+            ],
+            budget_tokens: 4096,
+            token_count,
+            entries,
+        },
+        lifecycle,
+    )
+}
+
+fn push_entry(
+    entries: &mut Vec<SnapshotEntry>,
+    id: &str,
+    slot: &str,
+    content: &str,
+    score: f32,
+    unit_ref: Option<String>,
+) {
+    if content.is_empty() {
+        return;
+    }
+    let mut entry = SnapshotEntry::now(id, slot, content, score);
+    entry.unit_ref = unit_ref;
+    entries.push(entry);
+}
+
+fn push_memory_hit(entries: &mut Vec<SnapshotEntry>, hit: &SearchHit, slot: &str) {
+    if hit.record.content.trim().is_empty() {
+        return;
+    }
+    entries.push(SnapshotEntry {
+        id: hit.record.id.to_string(),
+        slot: slot.to_string(),
+        content: hit.record.content.clone(),
+        tokens: count_tokens(&hit.record.content),
+        score: hit.score,
+        resolution: Resolution::Full,
+        unit_ref: Some(hit.record.node_id.clone()),
+        committed_at: hit.record.created_at,
+    });
+}
+
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct AnchorSetRequest {
     pub current_task: String,
@@ -626,6 +826,50 @@ pub struct AnchorPayload {
     pub last_decisions: Vec<String>,
     pub next_step: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SessionCheckpointRequest {
+    pub agent_id: String,
+    pub session_id: Option<String>,
+    pub user_id: Option<String>,
+    pub task_id: Option<String>,
+    pub current_task: Option<String>,
+    pub next_step: Option<String>,
+    pub plan_pointer: Option<String>,
+    pub last_decisions: Option<Vec<String>>,
+    pub goal: Option<String>,
+    pub last_failed_check: Option<String>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SessionResumeRequest {
+    pub session_id: Option<String>,
+    pub user_id: Option<String>,
+    pub task_id: Option<String>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct SessionCheckpointResponse {
+    pub summary: SessionSummaryPayload,
+    pub packet: serde_json::Value,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct SessionResumeResponse {
+    pub packet: serde_json::Value,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct SessionSummaryPayload {
+    pub user_id: String,
+    pub session_id: String,
+    pub task_id: String,
+    pub updated_at: String,
+    pub handed_off_from: Option<String>,
+    pub entry_count: usize,
+    pub token_count: Option<usize>,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -1138,6 +1382,80 @@ context to read plus per-cycle control metrics (admitted, rejected, footprint)."
         Ok(Json(AnchorGetResponse {
             anchor: Some(AnchorPayload::from(anchor)),
         }))
+    }
+
+    #[tool(
+        name = "memory.session.checkpoint",
+        description = "Checkpoint the current resumable session before yielding to another agent. \
+Addresses the bundle by user_id/session_id/task_id, records this producer as handed_off_from, and \
+stores the committed OCF snapshot for memory.session.resume."
+    )]
+    pub async fn memory_session_checkpoint(
+        &self,
+        Parameters(request): Parameters<SessionCheckpointRequest>,
+    ) -> Result<Json<SessionCheckpointResponse>, ErrorData> {
+        let key = SessionKey::new(
+            request.user_id.clone(),
+            request.session_id.clone(),
+            request.task_id.clone(),
+        );
+        let anchor = checkpoint_anchor(self.anchor_store.as_ref(), &key, &request).await?;
+        let query_text = request
+            .goal
+            .clone()
+            .unwrap_or_else(|| format!("{} {}", anchor.current_task, anchor.next_step));
+        let limit = request.limit.unwrap_or(8);
+        let session_hits =
+            session_scoped_hits(self.backend.as_ref(), &key, &query_text, limit).await?;
+        let invariant_hits = invariant_hits(self.backend.as_ref(), &key, &query_text).await?;
+        let bundle = build_session_bundle(
+            Some(&anchor),
+            &session_hits,
+            &invariant_hits,
+            request.last_failed_check.as_deref(),
+        );
+        let session = bundle
+            .to_ocf_session(&key, Some(request.agent_id))
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        let packet = WorkingContextBundle::resume_packet_from_session(&session)
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        let summary = SessionStore::new(self.backend.clone())
+            .store(session)
+            .await
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        Ok(Json(SessionCheckpointResponse {
+            summary: SessionSummaryPayload::from(summary),
+            packet,
+        }))
+    }
+
+    #[tool(
+        name = "memory.session.resume",
+        description = "Resume a committed cross-agent session by session_id plus optional user_id \
+and task_id. Restores the OCF snapshot without re-qualifying and never matches on agent_id."
+    )]
+    pub async fn memory_session_resume(
+        &self,
+        Parameters(request): Parameters<SessionResumeRequest>,
+    ) -> Result<Json<SessionResumeResponse>, ErrorData> {
+        let key = SessionKey::new(request.user_id, request.session_id, request.task_id);
+        let store = SessionStore::new(self.backend.clone());
+        let Some(session) = store
+            .load(&key)
+            .await
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?
+        else {
+            return Err(ErrorData::invalid_params(
+                format!(
+                    "no resumable session for user_id={} session_id={} task_id={}",
+                    key.user_id, key.session_id, key.task_id
+                ),
+                None,
+            ));
+        };
+        let packet = WorkingContextBundle::resume_packet_from_session(&session)
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        Ok(Json(SessionResumeResponse { packet }))
     }
 
     #[tool(
@@ -1763,6 +2081,20 @@ impl From<SessionAnchor> for AnchorPayload {
     }
 }
 
+impl From<SessionSummary> for SessionSummaryPayload {
+    fn from(summary: SessionSummary) -> Self {
+        Self {
+            user_id: summary.key.user_id,
+            session_id: summary.key.session_id,
+            task_id: summary.key.task_id,
+            updated_at: summary.updated_at.to_rfc3339(),
+            handed_off_from: summary.handed_off_from,
+            entry_count: summary.entry_count,
+            token_count: summary.token_count,
+        }
+    }
+}
+
 pub async fn run_stdio(root: impl Into<PathBuf>) -> anyhow::Result<()> {
     let server = MemoryServer::new(root);
     server.serve(stdio()).await?.waiting().await?;
@@ -1929,6 +2261,16 @@ fn tool_registry() -> &'static [RegisteredTool] {
             name: "memory.anchor.set",
             description:
                 "Write current task, plan pointer, decisions, and next step to OKF log.md.",
+        },
+        RegisteredTool {
+            name: "memory.session.checkpoint",
+            description:
+                "Checkpoint a resumable OCF session before yielding to another agent.",
+        },
+        RegisteredTool {
+            name: "memory.session.resume",
+            description:
+                "Resume a committed OCF session by user_id/session_id/task_id without matching agent_id.",
         },
         RegisteredTool {
             name: "agents.list",

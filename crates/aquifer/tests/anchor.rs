@@ -2,7 +2,7 @@
 
 use aquifer::{
     recover_after_compaction, AnchorAnchorStore, FilesBackend, MemoryBackend, MemoryTier,
-    SessionAnchor, StoreMemory,
+    SessionAnchor, SessionKey, StoreMemory,
 };
 use artesian_test_support::TempDir;
 
@@ -29,6 +29,51 @@ async fn anchor_anchor_round_trips_through_log() {
     assert_eq!(loaded.last_decisions, vec!["single mutation authority"]);
     assert_eq!(loaded.next_step, "write contract tests");
     assert_eq!(loaded.updated_at, written.updated_at);
+}
+
+#[tokio::test]
+async fn keyed_anchor_does_not_replace_default_anchor() {
+    let tempdir = TempDir::new("anchor-keyed");
+    let store = AnchorAnchorStore::new(tempdir.path());
+    let key = SessionKey::new(
+        Some("user-a".to_string()),
+        Some("session-a".to_string()),
+        Some("task-a".to_string()),
+    );
+
+    store
+        .set(SessionAnchor::new("default task", "default next"))
+        .await
+        .expect("default anchor should write");
+    store
+        .set_for_session(&key, SessionAnchor::new("keyed task", "keyed next"))
+        .await
+        .expect("keyed anchor should write");
+
+    let default_anchor = store
+        .get()
+        .await
+        .expect("default anchor should read")
+        .expect("default anchor should exist");
+    assert_eq!(default_anchor.current_task, "default task");
+
+    let keyed_anchor = store
+        .get_for_session(&key)
+        .await
+        .expect("keyed anchor should read")
+        .expect("keyed anchor should exist");
+    assert_eq!(keyed_anchor.current_task, "keyed task");
+
+    let other_key = SessionKey::new(
+        Some("user-a".to_string()),
+        Some("session-a".to_string()),
+        Some("other-task".to_string()),
+    );
+    assert!(store
+        .get_for_session(&other_key)
+        .await
+        .expect("other key should read")
+        .is_none());
 }
 
 #[tokio::test]

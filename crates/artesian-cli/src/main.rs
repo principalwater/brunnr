@@ -13,8 +13,8 @@ use anyhow::{bail, Context, Result};
 use aquifer::{
     consolidation_pass, default_migration_collection, export_okf_bundle, recover_after_compaction,
     verify_okf_bundle, AnchorAnchorStore, CollectionCompat, ConsolidationOptions, MemoryBackend,
-    MemoryQuery, MemoryScope, MemoryTier, MigrationPlan, SearchHit, SessionAnchor, StoreMemory,
-    VectorMemoryConfig,
+    MemoryQuery, MemoryScope, MemoryTier, MigrationPlan, SearchHit, SessionAnchor, SessionKey,
+    SessionListFilter, SessionStore, StoreMemory, VectorMemoryConfig,
 };
 use artesian_core::{
     Agent, AgentBinding, ArtesianConfig, MemoryBackendKind, MemoryConfig, Mode, Role, SpawnRequest,
@@ -131,6 +131,24 @@ enum Command {
     Memory {
         #[command(subcommand)]
         command: MemoryCommand,
+    },
+    /// Print the committed resume packet for a cross-agent session.
+    Handoff {
+        session_id: String,
+        #[arg(long = "user")]
+        user_id: Option<String>,
+        #[arg(long = "task")]
+        task_id: Option<String>,
+        #[arg(long, default_value = DEFAULT_CONFIG)]
+        config: PathBuf,
+        #[arg(long, default_value = ".artesian")]
+        root: PathBuf,
+        #[arg(long, value_enum)]
+        backend: Option<BackendArg>,
+    },
+    Session {
+        #[command(subcommand)]
+        command: SessionCommand,
     },
     Task {
         #[command(subcommand)]
@@ -432,6 +450,25 @@ impl From<TeamMessageKindArg> for TeamMessageKind {
             TeamMessageKindArg::Done => Self::Done,
         }
     }
+}
+
+#[derive(Debug, Subcommand)]
+enum SessionCommand {
+    /// List resumable cross-agent sessions.
+    List {
+        #[arg(long = "user")]
+        user_id: Option<String>,
+        #[arg(long = "session")]
+        session_id: Option<String>,
+        #[arg(long = "task")]
+        task_id: Option<String>,
+        #[arg(long, default_value = DEFAULT_CONFIG)]
+        config: PathBuf,
+        #[arg(long, default_value = ".artesian")]
+        root: PathBuf,
+        #[arg(long, value_enum)]
+        backend: Option<BackendArg>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -841,6 +878,15 @@ async fn main() -> Result<()> {
             once,
         } => run_orchestrator(config, root, dry_run, once).await,
         Command::Memory { command } => memory(command).await,
+        Command::Handoff {
+            session_id,
+            user_id,
+            task_id,
+            config,
+            root,
+            backend,
+        } => handoff(session_id, user_id, task_id, config, root, backend).await,
+        Command::Session { command } => session(command).await,
         Command::Task { command } => task(command).await,
         Command::Team { command } => team(command).await,
         Command::Backfill {
@@ -2283,6 +2329,54 @@ async fn memory(command: MemoryCommand) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&metrics)?);
         }
         MemoryCommand::Anchor { command } => anchor(command).await?,
+    }
+    Ok(())
+}
+
+async fn handoff(
+    session_id: String,
+    user_id: Option<String>,
+    task_id: Option<String>,
+    config: PathBuf,
+    root: PathBuf,
+    backend: Option<BackendArg>,
+) -> Result<()> {
+    let backend = open_backend_for_command(&config, root, backend)?;
+    let key = SessionKey::new(user_id, Some(session_id), task_id);
+    let store = SessionStore::new(backend);
+    let Some(session) = store.load(&key).await? else {
+        bail!(
+            "no resumable session for user_id={} session_id={} task_id={}",
+            key.user_id,
+            key.session_id,
+            key.task_id
+        );
+    };
+    let packet = WorkingContextBundle::resume_packet_from_session(&session)?;
+    println!("{}", serde_json::to_string_pretty(&packet)?);
+    Ok(())
+}
+
+async fn session(command: SessionCommand) -> Result<()> {
+    match command {
+        SessionCommand::List {
+            user_id,
+            session_id,
+            task_id,
+            config,
+            root,
+            backend,
+        } => {
+            let backend = open_backend_for_command(&config, root, backend)?;
+            let summaries = SessionStore::new(backend)
+                .list(SessionListFilter {
+                    user_id,
+                    session_id,
+                    task_id,
+                })
+                .await?;
+            println!("{}", serde_json::to_string_pretty(&summaries)?);
+        }
     }
     Ok(())
 }

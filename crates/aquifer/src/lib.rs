@@ -20,6 +20,7 @@ mod qdrant;
 mod retrieval;
 mod rrf;
 mod semantic_cache;
+mod session;
 #[cfg(feature = "sqlite-vec")]
 mod sqlite_vec;
 pub mod temporal;
@@ -59,6 +60,10 @@ pub use rrf::reciprocal_rank_fusion;
 #[cfg(feature = "vector")]
 pub use semantic_cache::EmbedderVectorizer;
 pub use semantic_cache::{cosine_similarity, CachingMemoryBackend, QueryVectorizer, SemanticCache};
+pub use session::{
+    Session, SessionKey, SessionListFilter, SessionStore, SessionSummary,
+    DEFAULT_SESSION_COMPONENT, SESSION_RECORD_SOURCE, SESSION_RECORD_TAG,
+};
 #[cfg(feature = "sqlite-vec")]
 pub use sqlite_vec::{SqliteVecBackend, SqliteVecVectorStore, SqliteVecVectorStoreConfig};
 pub use temporal::{apply_knowledge_supersession, apply_recency_decay};

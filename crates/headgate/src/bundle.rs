@@ -21,6 +21,8 @@ use std::path::Path;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use aquifer::{Session, SessionKey};
+
 use crate::ccs::{CcsSchema, CommittedContextState, CommittedEntry};
 use crate::metrics::count_tokens;
 
@@ -239,6 +241,8 @@ pub struct BundleManifest {
     pub version: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<OcfSession>,
     pub created_at: DateTime<Utc>,
     /// Where the underlying memory units live: `"inline"` (entries carry their own content) or
     /// an external unit format/store this bundle references (e.g. `"pam"`, `"amp"`, `"files"`).
@@ -254,10 +258,41 @@ impl BundleManifest {
             format: BUNDLE_FORMAT.to_string(),
             version: BUNDLE_VERSION.to_string(),
             agent_id: None,
+            session: None,
             created_at: Utc::now(),
             unit_source: "inline".to_string(),
             unit_ref: None,
         }
+    }
+}
+
+/// OCF session handoff metadata. The address is `(user_id, session_id, task_id)`;
+/// `handed_off_from` records the producer agent and is not part of lookup.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OcfSession {
+    pub session_id: String,
+    pub task_id: String,
+    pub user_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handed_off_from: Option<String>,
+}
+
+impl OcfSession {
+    pub fn new(key: &SessionKey, handed_off_from: Option<String>) -> Self {
+        Self {
+            session_id: key.session_id.clone(),
+            task_id: key.task_id.clone(),
+            user_id: key.user_id.clone(),
+            handed_off_from,
+        }
+    }
+
+    pub fn key(&self) -> SessionKey {
+        SessionKey::new(
+            Some(self.user_id.clone()),
+            Some(self.session_id.clone()),
+            Some(self.task_id.clone()),
+        )
     }
 }
 
@@ -447,6 +482,8 @@ struct OcfManifest {
     ocf_version: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    session: Option<OcfSession>,
     created: DateTime<Utc>,
     unit_source: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -494,65 +531,10 @@ impl WorkingContextBundle {
     /// Write the bundle in the Open Cognitive Format (OCF) four-file layout.
     pub fn write_ocf_dir(&self, dir: &Path) -> Result<(), BundleError> {
         std::fs::create_dir_all(dir)?;
-        let manifest = OcfManifest {
-            ocf_version: OCF_VERSION.to_string(),
-            agent_id: self.manifest.agent_id.clone(),
-            created: self.manifest.created_at,
-            unit_source: self.manifest.unit_source.clone(),
-            unit_refs: self.manifest.unit_ref.clone().into_iter().collect(),
-        };
-        let schema = OcfSchemaFile {
-            ocf_version: OCF_VERSION.to_string(),
-            slots: self
-                .snapshot
-                .schema
-                .iter()
-                .map(|name| OcfSlot {
-                    name: name.clone(),
-                    description: None,
-                })
-                .collect(),
-            budget_tokens: self.snapshot.budget_tokens,
-            eviction: "lowest-score".to_string(),
-        };
-        let saturation = if self.snapshot.budget_tokens > 0 {
-            self.snapshot.token_count as f32 / self.snapshot.budget_tokens as f32
-        } else {
-            0.0
-        };
-        let snapshot = OcfSnapshotFile {
-            budget_tokens: self.snapshot.budget_tokens,
-            token_count: self.snapshot.token_count,
-            saturation,
-            entries: self.snapshot.entries.clone(),
-        };
-        // Admit record per committed entry (carrying slot + score), plus any reject/deprecation
-        // events recorded in the lifecycle log.
-        let mut qualify: Vec<QualifyRecord> = self
-            .snapshot
-            .entries
-            .iter()
-            .map(|entry| QualifyRecord {
-                ts: entry.committed_at,
-                unit_ref: entry.id.clone(),
-                admitted: true,
-                slot: Some(entry.slot.clone()),
-                score: entry.score,
-                reason: Some("qualified".to_string()),
-            })
-            .collect();
-        for event in &self.lifecycle {
-            if matches!(event.decision, Decision::Evict | Decision::Deprecate) {
-                qualify.push(QualifyRecord {
-                    ts: event.ts,
-                    unit_ref: event.entry_id.clone(),
-                    admitted: false,
-                    slot: None,
-                    score: 0.0,
-                    reason: Some(format!("{:?}", event.decision).to_lowercase()),
-                });
-            }
-        }
+        let manifest = self.ocf_manifest();
+        let schema = self.ocf_schema();
+        let snapshot = self.ocf_snapshot();
+        let qualify = self.ocf_qualify();
         std::fs::write(
             dir.join(OCF_MANIFEST_FILE),
             serde_json::to_string_pretty(&manifest)?,
@@ -595,6 +577,7 @@ impl WorkingContextBundle {
             format: BUNDLE_FORMAT.to_string(),
             version: BUNDLE_VERSION.to_string(),
             agent_id: manifest.agent_id,
+            session: manifest.session,
             created_at: manifest.created,
             unit_source: manifest.unit_source,
             unit_ref: manifest.unit_refs.into_iter().next(),
@@ -607,6 +590,201 @@ impl WorkingContextBundle {
         bundle.validate()?;
         Ok(bundle)
     }
+
+    /// Convert this bundle into the persisted OCF session record used for cross-agent handoff.
+    pub fn to_ocf_session(
+        &self,
+        key: &SessionKey,
+        handed_off_from: Option<String>,
+    ) -> Result<Session, BundleError> {
+        let mut bundle = self.clone();
+        bundle.manifest.agent_id = handed_off_from.clone();
+        bundle.manifest.session = Some(OcfSession::new(key, handed_off_from));
+        bundle.validate()?;
+        Ok(Session::new(
+            key.clone(),
+            serde_json::to_value(bundle.ocf_manifest())?,
+            serde_json::to_value(bundle.ocf_schema())?,
+            serde_json::to_value(bundle.ocf_snapshot())?,
+            bundle
+                .ocf_qualify()
+                .into_iter()
+                .map(serde_json::to_value)
+                .collect::<Result<Vec<_>, _>>()?,
+        ))
+    }
+
+    /// Rehydrate a persisted OCF session bundle into a working-context bundle.
+    pub fn from_ocf_session(session: &Session) -> Result<Self, BundleError> {
+        let manifest: OcfManifest = serde_json::from_value(session.manifest.clone())?;
+        if !version_compatible(&manifest.ocf_version) {
+            return Err(BundleError::Version(manifest.ocf_version));
+        }
+        let Some(manifest_session) = &manifest.session else {
+            return Err(BundleError::Format(
+                "OCF manifest is missing session metadata".to_string(),
+            ));
+        };
+        if manifest_session.key() != session.key {
+            return Err(BundleError::Format(
+                "OCF manifest session does not match stored session key".to_string(),
+            ));
+        }
+        let schema: OcfSchemaFile = serde_json::from_value(session.schema.clone())?;
+        let snapshot: OcfSnapshotFile = serde_json::from_value(session.snapshot.clone())?;
+        let working = WorkingContextSnapshot {
+            schema: schema.slots.into_iter().map(|slot| slot.name).collect(),
+            budget_tokens: snapshot.budget_tokens,
+            token_count: snapshot.token_count,
+            entries: snapshot.entries,
+        };
+        let bundle = Self {
+            manifest: BundleManifest {
+                format: BUNDLE_FORMAT.to_string(),
+                version: BUNDLE_VERSION.to_string(),
+                agent_id: manifest.agent_id,
+                session: manifest.session,
+                created_at: manifest.created,
+                unit_source: manifest.unit_source,
+                unit_ref: manifest.unit_refs.into_iter().next(),
+            },
+            snapshot: working,
+            lifecycle: Vec::new(),
+        };
+        bundle.validate()?;
+        Ok(bundle)
+    }
+
+    /// The packet a consumer agent reads to continue without re-qualifying.
+    pub fn resume_packet_from_session(session: &Session) -> Result<serde_json::Value, BundleError> {
+        let bundle = Self::from_ocf_session(session)?;
+        let schema_issues = bundle.schema_issues();
+        if !schema_issues.is_empty() {
+            return Err(BundleError::Format(format!(
+                "OCF schema compatibility failed: {}",
+                schema_issues.join("; ")
+            )));
+        }
+        let session = bundle
+            .manifest
+            .session
+            .clone()
+            .unwrap_or_else(|| OcfSession::new(&session.key, None));
+        let goal = bundle
+            .snapshot
+            .entries
+            .iter()
+            .find(|entry| entry.id == "anchor-task")
+            .or_else(|| {
+                bundle
+                    .snapshot
+                    .entries
+                    .iter()
+                    .find(|entry| entry.slot == "task-state")
+            })
+            .map(|entry| entry.content.clone());
+        let invariants: Vec<String> = bundle
+            .snapshot
+            .entries
+            .iter()
+            .filter(|entry| entry.slot == "constraint")
+            .map(|entry| entry.content.clone())
+            .collect();
+        let last_failed_check = bundle
+            .snapshot
+            .entries
+            .iter()
+            .find(|entry| entry.id == "last-failed-check")
+            .map(|entry| entry.content.clone());
+        let mut sources = Vec::new();
+        for entry in &bundle.snapshot.entries {
+            let source = entry.unit_ref.as_ref().unwrap_or(&entry.id);
+            if !sources.contains(source) {
+                sources.push(source.clone());
+            }
+        }
+        Ok(serde_json::json!({
+            "session": session,
+            "restored_working_state": bundle.snapshot.render_markdown(),
+            "goal": goal,
+            "invariants": invariants,
+            "last_failed_check": last_failed_check,
+            "sources": sources,
+            "schema": bundle.snapshot.schema.clone(),
+            "snapshot": bundle.snapshot,
+        }))
+    }
+
+    fn ocf_manifest(&self) -> OcfManifest {
+        OcfManifest {
+            ocf_version: OCF_VERSION.to_string(),
+            agent_id: self.manifest.agent_id.clone(),
+            session: self.manifest.session.clone(),
+            created: self.manifest.created_at,
+            unit_source: self.manifest.unit_source.clone(),
+            unit_refs: self.manifest.unit_ref.clone().into_iter().collect(),
+        }
+    }
+
+    fn ocf_schema(&self) -> OcfSchemaFile {
+        OcfSchemaFile {
+            ocf_version: OCF_VERSION.to_string(),
+            slots: self
+                .snapshot
+                .schema
+                .iter()
+                .map(|name| OcfSlot {
+                    name: name.clone(),
+                    description: None,
+                })
+                .collect(),
+            budget_tokens: self.snapshot.budget_tokens,
+            eviction: "lowest-score".to_string(),
+        }
+    }
+
+    fn ocf_snapshot(&self) -> OcfSnapshotFile {
+        let saturation = if self.snapshot.budget_tokens > 0 {
+            self.snapshot.token_count as f32 / self.snapshot.budget_tokens as f32
+        } else {
+            0.0
+        };
+        OcfSnapshotFile {
+            budget_tokens: self.snapshot.budget_tokens,
+            token_count: self.snapshot.token_count,
+            saturation,
+            entries: self.snapshot.entries.clone(),
+        }
+    }
+
+    fn ocf_qualify(&self) -> Vec<QualifyRecord> {
+        let mut qualify: Vec<QualifyRecord> = self
+            .snapshot
+            .entries
+            .iter()
+            .map(|entry| QualifyRecord {
+                ts: entry.committed_at,
+                unit_ref: entry.id.clone(),
+                admitted: true,
+                slot: Some(entry.slot.clone()),
+                score: entry.score,
+                reason: Some("qualified".to_string()),
+            })
+            .collect();
+        for event in &self.lifecycle {
+            if matches!(event.decision, Decision::Evict | Decision::Deprecate) {
+                qualify.push(QualifyRecord {
+                    ts: event.ts,
+                    unit_ref: event.entry_id.clone(),
+                    admitted: false,
+                    slot: None,
+                    score: 0.0,
+                    reason: Some(format!("{:?}", event.decision).to_lowercase()),
+                });
+            }
+        }
+        qualify
+    }
 }
 
 /// Accept any bundle sharing this reader's major version.
@@ -618,6 +796,7 @@ fn version_compatible(found: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aquifer::SessionKey;
 
     fn fixed_ts() -> DateTime<Utc> {
         DateTime::parse_from_rfc3339("2026-06-21T08:30:00Z")
@@ -761,6 +940,41 @@ mod tests {
         assert_eq!(read.snapshot, bundle.snapshot);
         assert_eq!(read.manifest.unit_source, "inline");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn ocf_session_record_restores_resume_packet() {
+        let bundle =
+            WorkingContextBundle::new(sample_snapshot(), vec![LifecycleEntry::commit("a")]);
+        let key = SessionKey::new(
+            Some("user-a".to_string()),
+            Some("session-a".to_string()),
+            Some("task-a".to_string()),
+        );
+        let session = bundle
+            .to_ocf_session(&key, Some("codex".to_string()))
+            .expect("session should serialize");
+        assert_eq!(session.manifest["session"]["handed_off_from"], "codex");
+
+        let restored =
+            WorkingContextBundle::from_ocf_session(&session).expect("session should restore");
+        assert_eq!(restored.snapshot, bundle.snapshot);
+        assert_eq!(
+            restored
+                .manifest
+                .session
+                .expect("session metadata should exist")
+                .key(),
+            key
+        );
+
+        let packet = WorkingContextBundle::resume_packet_from_session(&session)
+            .expect("resume packet should render");
+        assert_eq!(packet["session"]["handed_off_from"], "codex");
+        assert!(packet["restored_working_state"]
+            .as_str()
+            .expect("state should be text")
+            .contains("ship the working-context bundle first"));
     }
 
     #[test]
