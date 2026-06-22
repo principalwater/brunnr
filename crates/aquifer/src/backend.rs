@@ -7,6 +7,17 @@ use crate::{
     StoreMemory,
 };
 
+/// Aggregate counts returned by `MemoryBackend::bulk_store`.
+#[derive(Debug, Clone, Default)]
+pub struct BulkStoreReport {
+    /// Number of chunks newly written.
+    pub stored: usize,
+    /// Number of chunks that already existed and were skipped.
+    pub skipped: usize,
+    /// IDs of chunks that failed to store, with error messages.
+    pub failures: Vec<(String, String)>,
+}
+
 /// Pluggable memory backend contract.
 ///
 /// Backends must support storing durable memories, finding relevant memories, hybrid RRF fusion,
@@ -71,6 +82,33 @@ pub trait MemoryBackend: Send + Sync {
     fn by_entity(&self, _entity: &str) -> BoxFuture<'_, MemoryResult<Vec<MemoryRecord>>> {
         async { Ok(Vec::new()) }.boxed()
     }
+
+    /// Store many memories in bulk. The default implementation is a sequential loop over
+    /// `store()`, which is correct for all backends. Backends that support batch upsert (e.g.
+    /// `VectorMemoryBackend<QdrantVectorStore>`) override this to batch the upserts and skip the
+    /// per-chunk existence round-trip, making large imports dramatically faster.
+    ///
+    /// Content-hash IDs are deterministic so re-importing identical content is idempotent:
+    /// the `skipped` count reflects duplicates detected by a single up-front bulk ID check;
+    /// `stored` counts newly written chunks.
+    fn bulk_store<'a>(
+        &'a self,
+        memories: Vec<StoreMemory>,
+        _batch_size: usize,
+    ) -> BoxFuture<'a, BulkStoreReport> {
+        async move {
+            let mut report = BulkStoreReport::default();
+            for memory in memories {
+                let id = crate::identity::stable_memory_id(&memory);
+                match self.store(memory).await {
+                    Ok(_) => report.stored += 1,
+                    Err(error) => report.failures.push((id.to_string(), error.to_string())),
+                }
+            }
+            report
+        }
+        .boxed()
+    }
 }
 
 /// Delegating impl so a type-erased `Arc<dyn MemoryBackend>` can be used wherever a
@@ -98,5 +136,13 @@ impl MemoryBackend for std::sync::Arc<dyn MemoryBackend> {
 
     fn by_entity(&self, entity: &str) -> BoxFuture<'_, MemoryResult<Vec<MemoryRecord>>> {
         (**self).by_entity(entity)
+    }
+
+    fn bulk_store<'a>(
+        &'a self,
+        memories: Vec<StoreMemory>,
+        batch_size: usize,
+    ) -> BoxFuture<'a, BulkStoreReport> {
+        (**self).bulk_store(memories, batch_size)
     }
 }

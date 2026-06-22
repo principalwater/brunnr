@@ -35,7 +35,7 @@ mod vector_memory;
 mod working;
 
 pub use anchor::{recover_after_compaction, AnchorAnchorStore, RecoveryContext, SessionAnchor};
-pub use backend::MemoryBackend;
+pub use backend::{BulkStoreReport, MemoryBackend};
 pub use backfill::{
     backfill_directory, collect_memory_paths, parse_memory_path, BackfillFailure, BackfillStats,
 };
@@ -55,8 +55,9 @@ pub use mmr::{mmr_diversify, MMR_DEFAULT_LAMBDA};
 pub use pgvector::{PgVectorBackend, PgVectorStore};
 #[cfg(feature = "qdrant")]
 pub use qdrant::{
-    preflight_qdrant, replicate_collection, QdrantBackend, QdrantEndpoints, QdrantPreflightReport,
-    QdrantVectorStore, QdrantVectorStoreConfig,
+    preflight_qdrant, replicate_collection, replicate_collection_incremental, QdrantBackend,
+    QdrantEndpoints, QdrantPreflightReport, QdrantVectorStore, QdrantVectorStoreConfig,
+    ReplicateReport,
 };
 #[cfg(feature = "vector")]
 pub use retrieval::FastembedReranker;

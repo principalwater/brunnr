@@ -8,8 +8,8 @@ use std::{
 
 use anyhow::Result;
 use aquifer::{
-    collect_memory_paths, parse_memory_path, stable_memory_id, BackfillFailure, FilesBackend,
-    MemoryBackend, MemoryScope, StoreMemory,
+    collect_memory_paths, parse_memory_path, BackfillFailure, FilesBackend, MemoryBackend,
+    MemoryScope, StoreMemory,
 };
 use headrace::{FilesTaskStore, VectorTaskStore};
 use serde::Serialize;
@@ -189,6 +189,11 @@ async fn import_task_path(
     }
 }
 
+/// Number of chunks sent to the backend in a single upsert call during bulk import.
+/// 256 points per batch keeps Qdrant gRPC messages well under the 4 MB default limit
+/// for the typical 384-dimension float32 embeddings used by Artesian.
+const IMPORT_BATCH_SIZE: usize = 256;
+
 async fn import_memory_path(
     source_root: &Path,
     path: &Path,
@@ -212,19 +217,33 @@ async fn import_memory_path(
         .map(|stem| stem.replace(['-', '_'], " "))
         .unwrap_or_else(|| "Imported memory".to_string());
 
-    for memory in memories {
-        let memory = with_user(memory, user_id);
-        if let Some(okf_memory) = okf_memory {
-            if let Err(error) = store_if_missing(okf_memory, memory.clone()).await {
-                push_failure(report, path, error);
-                continue;
-            }
+    let memories: Vec<StoreMemory> = memories
+        .into_iter()
+        .map(|memory| with_user(memory, user_id))
+        .collect();
+
+    // Mirror to OKF backend first (FilesBackend uses default sequential bulk_store).
+    if let Some(okf_memory) = okf_memory {
+        let okf_result = okf_memory
+            .bulk_store(memories.clone(), IMPORT_BATCH_SIZE)
+            .await;
+        for (id, reason) in okf_result.failures {
+            report.failed.push(BackfillFailure {
+                file: path.to_path_buf(),
+                reason: format!("okf mirror [{id}]: {reason}"),
+            });
         }
-        match store_if_missing(primary_memory, memory).await {
-            Ok(StoreOutcome::Imported) => report.memory_imported += 1,
-            Ok(StoreOutcome::SkippedDuplicate) => report.memory_skipped_duplicates += 1,
-            Err(error) => push_failure(report, path, error),
-        }
+    }
+
+    // Bulk-store to the primary backend: skips per-chunk existence checks for speed.
+    let result = primary_memory.bulk_store(memories, IMPORT_BATCH_SIZE).await;
+    report.memory_imported += result.stored;
+    report.memory_skipped_duplicates += result.skipped;
+    for (id, reason) in result.failures {
+        report.failed.push(BackfillFailure {
+            file: path.to_path_buf(),
+            reason: format!("[{id}]: {reason}"),
+        });
     }
 
     catalog.push(CatalogEntry {
@@ -233,24 +252,6 @@ async fn import_memory_path(
         title,
         chunks: chunk_count,
     });
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StoreOutcome {
-    Imported,
-    SkippedDuplicate,
-}
-
-async fn store_if_missing(
-    backend: &dyn MemoryBackend,
-    memory: StoreMemory,
-) -> Result<StoreOutcome, aquifer::MemoryError> {
-    let id = stable_memory_id(&memory);
-    if backend.get_node(id.as_str()).await?.is_some() {
-        return Ok(StoreOutcome::SkippedDuplicate);
-    }
-    backend.store(memory).await?;
-    Ok(StoreOutcome::Imported)
 }
 
 fn with_user(mut memory: StoreMemory, user_id: Option<&str>) -> StoreMemory {

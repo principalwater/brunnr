@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use futures_util::future::BoxFuture;
+use futures_util::{future::BoxFuture, FutureExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -218,6 +218,26 @@ pub trait VectorStore: Send + Sync {
     fn upsert(&self, collection: &str, points: Vec<VectorPoint>)
         -> BoxFuture<'_, MemoryResult<()>>;
 
+    /// Upsert points without waiting for the index to finish building. Returns immediately after
+    /// the server accepts the batch. Call `flush_upsert` once after all batches are sent.
+    ///
+    /// The default implementation delegates to `upsert` (with wait), which is correct for all
+    /// in-process backends (Files, SQLite-vec). Qdrant overrides this to use `wait=false`.
+    fn upsert_no_wait(
+        &self,
+        collection: &str,
+        points: Vec<VectorPoint>,
+    ) -> BoxFuture<'_, MemoryResult<()>> {
+        self.upsert(collection, points)
+    }
+
+    /// Issue a final synchronisation barrier after a series of `upsert_no_wait` calls. No-op
+    /// for backends that do not need it (Files, SQLite-vec). Qdrant overrides this to send an
+    /// empty `upsert_points(...).wait(true)` so all preceding async batches are indexed.
+    fn flush_upsert(&self, _collection: &str) -> BoxFuture<'_, MemoryResult<()>> {
+        async { Ok(()) }.boxed()
+    }
+
     fn search(
         &self,
         collection: &str,
@@ -252,6 +272,18 @@ impl<T: VectorStore + ?Sized> VectorStore for &T {
         points: Vec<VectorPoint>,
     ) -> BoxFuture<'_, MemoryResult<()>> {
         (**self).upsert(collection, points)
+    }
+
+    fn upsert_no_wait(
+        &self,
+        collection: &str,
+        points: Vec<VectorPoint>,
+    ) -> BoxFuture<'_, MemoryResult<()>> {
+        (**self).upsert_no_wait(collection, points)
+    }
+
+    fn flush_upsert(&self, collection: &str) -> BoxFuture<'_, MemoryResult<()>> {
+        (**self).flush_upsert(collection)
     }
 
     fn search(

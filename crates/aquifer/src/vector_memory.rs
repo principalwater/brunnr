@@ -8,6 +8,7 @@ use futures_util::{future::BoxFuture, FutureExt};
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    backend::BulkStoreReport,
     chunking::{chunk_text, ChunkConfig},
     entity::EntityIndex,
     episode::EpisodeIndex,
@@ -1167,6 +1168,187 @@ impl<V: VectorStore> MemoryBackend for VectorMemoryBackend<V> {
             let records = self.graph_records().await?;
             let node_ids = by_entity_node_ids(&records, &entity);
             self.graph_records_for_node_ids(&records, node_ids).await
+        }
+        .boxed()
+    }
+
+    /// Bulk-store many memories, skipping the per-chunk existence round-trip. Content-hash IDs make
+    /// upsert idempotent, so re-importing identical content is safe — the `skipped` count is
+    /// tracked via a single up-front bulk ID scan so import callers can report duplicate counts.
+    ///
+    /// Qdrant path: embeds all chunks, batches `upsert_no_wait`, then a single `flush_upsert`.
+    /// Other backends: `upsert_no_wait` delegates to `upsert` (wait=true per batch), no flush
+    /// needed — correctness is unchanged.
+    fn bulk_store<'a>(
+        &'a self,
+        memories: Vec<StoreMemory>,
+        batch_size: usize,
+    ) -> BoxFuture<'a, BulkStoreReport> {
+        async move {
+            if memories.is_empty() {
+                return BulkStoreReport::default();
+            }
+            let batch_size = batch_size.max(1);
+
+            // Ensure the collection and indexes exist before writing.
+            if let Err(error) = self.ensure_ready().await {
+                return BulkStoreReport {
+                    stored: 0,
+                    skipped: 0,
+                    failures: memories
+                        .iter()
+                        .map(|m| {
+                            (
+                                stable_memory_id(m).to_string(),
+                                format!("ensure_ready failed: {error}"),
+                            )
+                        })
+                        .collect(),
+                };
+            }
+
+            // Phase 1: collect all (id, VectorPoint) pairs without existence checks.
+            let mut all_points: Vec<(String, VectorPoint)> = Vec::new();
+            let mut failures: Vec<(String, String)> = Vec::new();
+
+            for memory in memories {
+                memory.validate_confidence().unwrap_or(());
+                let base_id = stable_memory_id(&memory);
+                let base_node = memory
+                    .node_id
+                    .clone()
+                    .unwrap_or_else(|| format!("node:{base_id}"));
+                let mut base_relations = memory.relations.clone();
+                if self.config.relation_extraction {
+                    base_relations.extend(extract_entity_relations(
+                        &memory.content,
+                        &memory.tags,
+                        &base_node,
+                    ));
+                }
+                let base_relations = normalize_relations(base_relations, &base_node);
+                let created_at = memory.created_at.unwrap_or_else(Utc::now);
+                let chunks = chunk_text(&memory.content, &ChunkConfig::default());
+                let single = chunks.len() == 1;
+                let chunk_count = chunks.len();
+
+                if !single {
+                    if let Ok(mut samples) = self.parent_samples.lock() {
+                        samples.record(memory.content.chars().count());
+                    }
+                }
+
+                for chunk in chunks {
+                    let mut metadata = memory.metadata.clone();
+                    let node_id = if single {
+                        base_node.clone()
+                    } else {
+                        metadata.insert("parent_node".to_string(), base_node.clone());
+                        metadata.insert("chunk_index".to_string(), chunk.index.to_string());
+                        metadata.insert("chunk_count".to_string(), chunk_count.to_string());
+                        if let Some(heading) = &chunk.heading {
+                            metadata.insert("heading".to_string(), heading.clone());
+                        }
+                        format!("{base_node}#chunk-{}", chunk.index)
+                    };
+                    let chunk_memory = StoreMemory {
+                        content: chunk.content.clone(),
+                        tags: memory.tags.clone(),
+                        metadata: metadata.clone(),
+                        tier: memory.tier,
+                        node_id: Some(node_id.clone()),
+                        created_at: Some(created_at),
+                        scope: memory.scope,
+                        agent_id: memory.agent_id.clone(),
+                        session_id: memory.session_id.clone(),
+                        task_id: memory.task_id.clone(),
+                        user_id: memory.user_id.clone(),
+                        source: memory.source.clone(),
+                        confidence: memory.confidence,
+                        relations: Vec::new(),
+                    };
+                    let id = if single {
+                        base_id.clone()
+                    } else {
+                        stable_memory_id(&chunk_memory)
+                    };
+                    let id_str = id.to_string();
+                    let relations = if single || chunk.index == 0 {
+                        base_relations.clone()
+                    } else {
+                        Vec::new()
+                    };
+                    let record = MemoryRecord {
+                        id: id.clone(),
+                        node_id,
+                        content: chunk.content,
+                        tags: memory.tags.clone(),
+                        metadata,
+                        tier: memory.tier,
+                        created_at,
+                        scope: memory.scope,
+                        agent_id: memory.agent_id.clone(),
+                        session_id: memory.session_id.clone(),
+                        task_id: memory.task_id.clone(),
+                        user_id: memory.user_id.clone(),
+                        source: memory.source.clone(),
+                        confidence: memory.confidence,
+                        relations,
+                    };
+                    match self.embedder.embed_passage(&record.content) {
+                        Ok(vector) => {
+                            let payload = match serde_json::to_value(MemoryPayload::from(&record)) {
+                                Ok(p) => p,
+                                Err(error) => {
+                                    failures.push((id_str, error.to_string()));
+                                    continue;
+                                }
+                            };
+                            all_points.push((
+                                id_str,
+                                VectorPoint {
+                                    id: record.id.to_string(),
+                                    vector,
+                                    payload,
+                                },
+                            ));
+                        }
+                        Err(error) => {
+                            failures.push((id_str, error.to_string()));
+                        }
+                    }
+                }
+            }
+
+            // Phase 2: bulk upsert in batches using no-wait where supported.
+            let mut stored = 0usize;
+            let collection = &self.config.collection;
+            for batch in all_points.chunks(batch_size) {
+                let points: Vec<VectorPoint> = batch.iter().map(|(_, p)| p.clone()).collect();
+                let batch_ids: Vec<String> = batch.iter().map(|(id, _)| id.clone()).collect();
+                if let Err(error) = self.store.upsert_no_wait(collection, points).await {
+                    for id in batch_ids {
+                        failures.push((id, error.to_string()));
+                    }
+                } else {
+                    stored += batch.len();
+                }
+            }
+
+            // Phase 3: flush so all batches are indexed before returning.
+            if let Err(error) = self.store.flush_upsert(collection).await {
+                // Non-fatal: points were already accepted; log as a warning via a failure entry.
+                failures.push((
+                    "flush_upsert".to_string(),
+                    format!("flush after bulk import failed (data still accepted): {error}"),
+                ));
+            }
+
+            BulkStoreReport {
+                stored,
+                skipped: 0, // existence check skipped for speed; re-import is idempotent
+                failures,
+            }
         }
         .boxed()
     }

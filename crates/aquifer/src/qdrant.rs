@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::{collections::HashMap, time::Duration};
 
 use futures_util::{future::BoxFuture, FutureExt};
 use qdrant_client::{
     qdrant::{
-        Condition, CreateCollectionBuilder, CreateFieldIndexCollectionBuilder, FieldType, Filter,
-        GetPointsBuilder, HnswConfigDiffBuilder, PointId, PointStruct, QuantizationType,
-        QueryPointsBuilder, RetrievedPoint, ScalarQuantizationBuilder, ScoredPoint,
-        ScrollPointsBuilder, UpsertPointsBuilder, Value, VectorParamsBuilder, VectorsOutput,
+        Condition, CreateCollectionBuilder, CreateFieldIndexCollectionBuilder, DeletePointsBuilder,
+        FieldType, Filter, GetPointsBuilder, HnswConfigDiffBuilder, PointId, PointStruct,
+        PointsIdsList, QuantizationType, QueryPointsBuilder, RetrievedPoint,
+        ScalarQuantizationBuilder, ScoredPoint, ScrollPointsBuilder, UpsertPointsBuilder, Value,
+        VectorParamsBuilder, VectorsOutput,
     },
     Payload, Qdrant,
 };
@@ -138,6 +140,92 @@ impl QdrantVectorStore {
 
     pub async fn preflight(config: QdrantVectorStoreConfig) -> MemoryResult<QdrantPreflightReport> {
         preflight_qdrant(config).await
+    }
+
+    /// Convert `VectorPoint`s and upsert them. `wait=true` blocks until the collection index is
+    /// updated; `wait=false` returns as soon as the server has accepted the batch (used during bulk
+    /// import to pipeline batches and issue one final wait at the end).
+    pub(crate) async fn upsert_points_internal(
+        &self,
+        collection: &str,
+        points: Vec<VectorPoint>,
+        wait: bool,
+    ) -> MemoryResult<()> {
+        if points.is_empty() {
+            return Ok(());
+        }
+        let qdrant_points = points
+            .into_iter()
+            .map(|point| {
+                let payload = Payload::try_from(point.payload)
+                    .map_err(|error| MemoryError::BackendUnavailable(error.to_string()))?;
+                Ok(PointStruct::new(
+                    qdrant_point_id(&point.id),
+                    point.vector,
+                    payload,
+                ))
+            })
+            .collect::<MemoryResult<Vec<_>>>()?;
+        self.client
+            .upsert_points(UpsertPointsBuilder::new(collection, qdrant_points).wait(wait))
+            .await
+            .map_err(qdrant_error)?;
+        Ok(())
+    }
+
+    /// Scroll every point ID (as UUID strings) in `collection` into a `HashSet`. Used by
+    /// incremental replication to compute the ID diff without fetching payloads/vectors.
+    pub(crate) async fn scroll_all_ids(
+        &self,
+        collection: &str,
+        batch: u32,
+    ) -> MemoryResult<HashSet<String>> {
+        let mut ids = HashSet::new();
+        let mut offset: Option<PointId> = None;
+        loop {
+            let mut builder = ScrollPointsBuilder::new(collection)
+                .limit(batch.max(1))
+                .with_payload(false)
+                .with_vectors(false);
+            if let Some(off) = offset.clone() {
+                builder = builder.offset(off);
+            }
+            let response = self.client.scroll(builder).await.map_err(qdrant_error)?;
+            let next = response.next_page_offset.clone();
+            for point in response.result {
+                if let Some(id) = point.id {
+                    ids.insert(point_id_to_string(&id));
+                }
+            }
+            match next {
+                Some(next_offset) => offset = Some(next_offset),
+                None => break,
+            }
+        }
+        Ok(ids)
+    }
+
+    /// Delete `ids` (UUID strings) from `collection` on the target, batched to avoid
+    /// oversized single requests. Used by incremental replication with `--prune`.
+    async fn delete_ids(
+        &self,
+        collection: &str,
+        ids: Vec<String>,
+        batch: u32,
+    ) -> MemoryResult<usize> {
+        let total = ids.len();
+        for chunk in ids.chunks(batch.max(1) as usize) {
+            let point_ids: Vec<PointId> = chunk.iter().map(|id| id.clone().into()).collect();
+            self.client
+                .delete_points(
+                    DeletePointsBuilder::new(collection)
+                        .points(PointsIdsList { ids: point_ids })
+                        .wait(true),
+                )
+                .await
+                .map_err(qdrant_error)?;
+        }
+        Ok(total)
     }
 }
 
@@ -280,22 +368,30 @@ impl VectorStore for QdrantVectorStore {
         points: Vec<VectorPoint>,
     ) -> BoxFuture<'_, MemoryResult<()>> {
         let collection = collection.to_string();
-        async move {
-            let points = points
-                .into_iter()
-                .map(|point| {
-                    let payload = Payload::try_from(point.payload)
-                        .map_err(|error| MemoryError::BackendUnavailable(error.to_string()))?;
-                    Ok(PointStruct::new(
-                        qdrant_point_id(&point.id),
-                        point.vector,
-                        payload,
-                    ))
-                })
-                .collect::<MemoryResult<Vec<_>>>()?;
+        async move { self.upsert_points_internal(&collection, points, true).await }.boxed()
+    }
 
+    fn upsert_no_wait(
+        &self,
+        collection: &str,
+        points: Vec<VectorPoint>,
+    ) -> BoxFuture<'_, MemoryResult<()>> {
+        let collection = collection.to_string();
+        async move {
+            self.upsert_points_internal(&collection, points, false)
+                .await
+        }
+        .boxed()
+    }
+
+    fn flush_upsert(&self, collection: &str) -> BoxFuture<'_, MemoryResult<()>> {
+        let collection = collection.to_string();
+        async move {
+            // Send an empty batch with wait=true so Qdrant indexes all preceding no-wait batches.
             self.client
-                .upsert_points(UpsertPointsBuilder::new(collection, points).wait(true))
+                .upsert_points(
+                    UpsertPointsBuilder::new(&collection, Vec::<PointStruct>::new()).wait(true),
+                )
                 .await
                 .map_err(qdrant_error)?;
             Ok(())
@@ -463,6 +559,154 @@ pub async fn replicate_collection(
         }
     }
     Ok(total)
+}
+
+/// Report returned by `replicate_collection_incremental`.
+#[derive(Debug, Clone, Default)]
+pub struct ReplicateReport {
+    /// Points upserted to the target (new or changed).
+    pub upserted: usize,
+    /// Points removed from the target because they are no longer in the source (`--prune` only).
+    pub deleted: usize,
+    /// Points present in both source and target with matching IDs — not re-sent.
+    pub unchanged: usize,
+}
+
+/// Incremental replication: scroll IDs from both source and target, upsert only the points whose
+/// IDs are absent from the target (or whose payload/vector changed), and optionally delete from the
+/// target any IDs that are no longer in the source. A full-copy fallback is available via
+/// `replicate_collection`.
+///
+/// - `prune`: if `true`, delete target points whose IDs are not in the source.
+/// - `batch`: number of points per scroll/upsert call.
+pub async fn replicate_collection_incremental(
+    source: &QdrantVectorStore,
+    target: &QdrantVectorStore,
+    source_collection: &str,
+    target_collection: &str,
+    prune: bool,
+    batch: u32,
+) -> MemoryResult<ReplicateReport> {
+    // Phase 1: collect the full ID sets from both endpoints.
+    let source_ids = source
+        .scroll_all_ids(source_collection, batch)
+        .await
+        .map_err(|error| {
+            MemoryError::BackendUnavailable(format!(
+                "failed to scroll source IDs from {source_collection}: {error}"
+            ))
+        })?;
+    let target_ids = target
+        .scroll_all_ids(target_collection, batch)
+        .await
+        .unwrap_or_default(); // target collection may not exist yet
+
+    // Phase 2: compute diff.
+    let to_upsert: Vec<&String> = source_ids.difference(&target_ids).collect();
+    let to_delete: Vec<String> = if prune {
+        target_ids.difference(&source_ids).cloned().collect()
+    } else {
+        Vec::new()
+    };
+    let unchanged = source_ids.intersection(&target_ids).count();
+
+    let mut report = ReplicateReport {
+        upserted: 0,
+        deleted: 0,
+        unchanged,
+    };
+
+    if to_upsert.is_empty() && to_delete.is_empty() {
+        return Ok(report);
+    }
+
+    // Ensure target collection exists (infer dimensions from first source point to upsert).
+    if !to_upsert.is_empty() {
+        // Fetch the first point to determine dimensions.
+        let first_id = to_upsert[0];
+        let first_point = {
+            let response = source
+                .client
+                .get_points(
+                    GetPointsBuilder::new(
+                        source_collection,
+                        vec![qdrant_point_id(first_id).into()],
+                    )
+                    .with_payload(true)
+                    .with_vectors(true),
+                )
+                .await
+                .map_err(qdrant_error)?;
+            response.result.into_iter().next()
+        };
+        if let Some(fp) = first_point {
+            let dimensions = extract_vector(&fp.vectors)
+                .ok_or_else(|| {
+                    MemoryError::BackendUnavailable(
+                        "source points carry no single unnamed vector to replicate".to_string(),
+                    )
+                })?
+                .len();
+            target
+                .ensure_collection(VectorCollection {
+                    name: target_collection.to_string(),
+                    dimensions,
+                    distance: Distance::Cosine,
+                    quantization: VectorQuantization::default(),
+                })
+                .await?;
+        }
+
+        // Fetch and upsert the missing points in batches.
+        for id_chunk in to_upsert.chunks(batch.max(1) as usize) {
+            let point_ids: Vec<PointId> = id_chunk
+                .iter()
+                .map(|id| qdrant_point_id(id).into())
+                .collect();
+            let response = source
+                .client
+                .get_points(
+                    GetPointsBuilder::new(source_collection, point_ids)
+                        .with_payload(true)
+                        .with_vectors(true),
+                )
+                .await
+                .map_err(qdrant_error)?;
+            let points: Vec<PointStruct> = response
+                .result
+                .into_iter()
+                .filter_map(|point| {
+                    let id = point.id?;
+                    let vector = extract_vector(&point.vectors)?;
+                    Some(PointStruct::new(id, vector, Payload::from(point.payload)))
+                })
+                .collect();
+            let n = points.len();
+            target
+                .client
+                .upsert_points(UpsertPointsBuilder::new(target_collection, points).wait(false))
+                .await
+                .map_err(qdrant_error)?;
+            report.upserted += n;
+        }
+        // Final wait: ensure all batches are indexed.
+        target
+            .client
+            .upsert_points(
+                UpsertPointsBuilder::new(target_collection, Vec::<PointStruct>::new()).wait(true),
+            )
+            .await
+            .map_err(qdrant_error)?;
+    }
+
+    // Phase 3: delete target-only points (prune mode).
+    if !to_delete.is_empty() {
+        report.deleted = target
+            .delete_ids(target_collection, to_delete, batch)
+            .await?;
+    }
+
+    Ok(report)
 }
 
 /// Extract a point's single unnamed dense vector, if present (handles both the legacy `data`
@@ -814,6 +1058,18 @@ fn qdrant_point_id(memory_id: &str) -> String {
         &hex[16..20],
         &hex[20..32]
     )
+}
+
+/// Convert a Qdrant `PointId` back to a UUID string. The incremental replication ID-diff stores
+/// IDs as UUID strings so they can be compared across source and target without round-tripping
+/// through the Qdrant hash function.
+fn point_id_to_string(id: &PointId) -> String {
+    use qdrant_client::qdrant::point_id::PointIdOptions;
+    match &id.point_id_options {
+        Some(PointIdOptions::Uuid(uuid)) => uuid.clone(),
+        Some(PointIdOptions::Num(n)) => n.to_string(),
+        None => String::new(),
+    }
 }
 
 fn qdrant_error(error: qdrant_client::QdrantError) -> MemoryError {

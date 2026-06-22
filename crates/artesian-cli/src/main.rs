@@ -290,6 +290,10 @@ enum Command {
     /// Replicate a Qdrant collection between two endpoints (e.g. a LAN instance and a local Docker
     /// instance) — scroll + upsert, merging by point id. Pass your own URLs/keys; the endpoints
     /// live in your local config, never in the repo.
+    ///
+    /// Default mode is incremental: only points missing from the target are sent. Use `--full` to
+    /// force a complete scroll-and-upsert of all source points. Use `--prune` (incremental only)
+    /// to also delete from the target any points whose IDs are no longer in the source.
     Replicate {
         /// Source Qdrant URL.
         #[arg(long)]
@@ -310,6 +314,16 @@ enum Command {
         /// Only check that both endpoints are reachable; do not copy.
         #[arg(long)]
         status: bool,
+        /// Force a full scroll-and-upsert of all source points (the old behaviour).
+        #[arg(long)]
+        full: bool,
+        /// Incremental mode (default): only send points missing from the target.
+        /// Passing `--incremental` is a no-op if `--full` is not also set (incremental is the default).
+        #[arg(long)]
+        incremental: bool,
+        /// Delete from the target any points whose IDs are no longer in the source (incremental only).
+        #[arg(long)]
+        prune: bool,
         #[arg(long, default_value_t = 256)]
         batch: u32,
     },
@@ -1070,6 +1084,9 @@ async fn main() -> Result<()> {
             collection,
             to_collection,
             status,
+            full,
+            incremental: _,
+            prune,
             batch,
         } => {
             run_replicate(
@@ -1080,6 +1097,8 @@ async fn main() -> Result<()> {
                 collection,
                 to_collection,
                 status,
+                full,
+                prune,
                 batch,
             )
             .await
@@ -1987,9 +2006,14 @@ async fn run_replicate(
     collection: String,
     to_collection: Option<String>,
     status: bool,
+    full: bool,
+    prune: bool,
     batch: u32,
 ) -> Result<()> {
-    use aquifer::{replicate_collection, QdrantVectorStore, QdrantVectorStoreConfig};
+    use aquifer::{
+        replicate_collection, replicate_collection_incremental, QdrantVectorStore,
+        QdrantVectorStoreConfig,
+    };
     let target_collection = to_collection.unwrap_or_else(|| collection.clone());
     let mut from_cfg = QdrantVectorStoreConfig::new(from_url);
     from_cfg.api_key = from_key;
@@ -2010,13 +2034,30 @@ async fn run_replicate(
         .await
         .map_err(|error| anyhow::anyhow!("target unreachable: {error}"))?;
     if status {
-        println!("✓ both Qdrant endpoints reachable; collection = {collection}");
+        println!("both Qdrant endpoints reachable; collection = {collection}");
         return Ok(());
     }
-    let copied = replicate_collection(&source, &target, &collection, &target_collection, batch)
+    if full {
+        let copied = replicate_collection(&source, &target, &collection, &target_collection, batch)
+            .await
+            .map_err(|error| anyhow::anyhow!("replicate (full): {error}"))?;
+        println!("replicated {copied} points (full): {collection} -> {target_collection}");
+    } else {
+        let report = replicate_collection_incremental(
+            &source,
+            &target,
+            &collection,
+            &target_collection,
+            prune,
+            batch,
+        )
         .await
-        .map_err(|error| anyhow::anyhow!("replicate: {error}"))?;
-    println!("✓ replicated {copied} points: {collection} -> {target_collection}");
+        .map_err(|error| anyhow::anyhow!("replicate (incremental): {error}"))?;
+        println!(
+            "replicated incremental: upserted={} deleted={} unchanged={} ({collection} -> {target_collection})",
+            report.upserted, report.deleted, report.unchanged,
+        );
+    }
     Ok(())
 }
 
@@ -2031,6 +2072,8 @@ async fn run_replicate(
     _collection: String,
     _to_collection: Option<String>,
     _status: bool,
+    _full: bool,
+    _prune: bool,
     _batch: u32,
 ) -> Result<()> {
     bail!("`replicate` requires the `qdrant` feature; rebuild with --features qdrant")
