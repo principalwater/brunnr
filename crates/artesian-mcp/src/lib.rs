@@ -523,6 +523,74 @@ pub struct StoreResponse {
     pub node_id: String,
 }
 
+/// Request for `memory.learn`: commit a curated, governed SKILL memory record.
+///
+/// Skills committed here carry provenance (`sources`), usage signals (`access_count`), and
+/// participate in the normal decay/eviction lifecycle — making them governed and portable.
+///
+/// DISCIPLINE: commit a CURATED skill — clear title, polished body, explicit sources.
+///
+/// Re-learning the same title + content is idempotent (content-hash dedup via `node_id`).
+///
+/// Future capability (deferred): skill records are the substrate for PreAct-style guarded
+/// procedural replay — compiling a skill into a guarded state-machine replayed without model
+/// calls. That capability is not yet implemented; see docs/skills.md when available.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct LearnRequest {
+    /// Short human-readable title for the skill (used as a stable lookup key in listings).
+    pub title: String,
+    /// Curated body text of the skill. Should be polished prose or step-by-step instructions,
+    /// not raw conversation output. Combine with `sources` for provenance attribution.
+    pub content: String,
+    /// Provenance source identifiers (file paths, URLs, doc references).  Stored on the record
+    /// and visible in `memory.skills` listings; multiple values are joined and stored together.
+    pub sources: Option<Vec<String>>,
+    /// Additional tags to attach (the `skill` tag is always included automatically).
+    pub tags: Option<Vec<String>>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct LearnResponse {
+    /// Stable record ID (content-hash based; identical on idempotent re-learn).
+    pub id: String,
+    /// Stable node_id (`skill:<hash>`); use this to retrieve the skill by node_id.
+    pub node_id: String,
+}
+
+/// A single skill entry returned by `memory.skills`.
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct SkillHit {
+    pub id: String,
+    pub node_id: String,
+    /// Full skill content (title heading + body).
+    pub content: String,
+    /// Human-readable title extracted from `metadata["title"]` when available (manually learned
+    /// skills); `None` for auto-committed loop skills that lack an explicit title.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// How many times this skill has been surfaced by `find`/`context` (usage signal for decay).
+    pub access_count: u32,
+    /// Provenance: source paths, URLs, or origin label recorded at learn time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// ISO-8601 timestamp of the most recent retrieval (`None` if never retrieved).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_access: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SkillsRequest {
+    /// Maximum number of skills to return (default 20).
+    pub limit: Option<usize>,
+    /// Sort by usage (access_count descending) instead of default relevance/decay order.
+    pub by_usage: Option<bool>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct SkillsResponse {
+    pub skills: Vec<SkillHit>,
+}
+
 pub async fn answer_memory(
     backend: &dyn MemoryBackend,
     acc: &AccConfig,
@@ -2696,6 +2764,125 @@ decay decision is logged in qualify.jsonl. Opt-in — run on a schedule or at co
             out: out_path.display().to_string(),
             files,
         }))
+    }
+
+    #[tool(
+        name = "memory.learn",
+        description = "Commit a curated GOVERNED SKILL memory record with provenance tracking. \
+Unlike flat-file skill stores (Hermes /learn, deepagents Skills), Artesian skill records carry \
+provenance (sources), usage signals (access_count), and participate in the normal decay/eviction \
+lifecycle. DISCIPLINE: commit a curated skill — clear title, polished body, explicit sources. \
+Re-learning the same title+content is idempotent (content-hash node_id dedup). \
+Skill records are the future substrate for PreAct-style guarded procedural replay (deferred)."
+    )]
+    pub async fn memory_learn(
+        &self,
+        Parameters(request): Parameters<LearnRequest>,
+    ) -> Result<Json<LearnResponse>, ErrorData> {
+        // Canonical body: title as a heading followed by the skill content.
+        let body = format!("# {}\n\n{}", request.title, request.content);
+
+        // Stable node_id: same title + content → same hash → idempotent re-store.
+        let hash =
+            loop_core::stable_content_hash(&format!("{}\n\n{}", request.title, request.content));
+        let node_id = format!("skill:{hash}");
+
+        // Provenance: join supplied sources; fall back to "artesian-learn".
+        let sources = request.sources.unwrap_or_default();
+        let source = if sources.is_empty() {
+            Some("artesian-learn".to_string())
+        } else {
+            Some(sources.join(", "))
+        };
+
+        // Metadata: explicit title key for structured listing; sources list when multiple.
+        let mut metadata = std::collections::BTreeMap::<String, String>::new();
+        metadata.insert("title".to_string(), request.title.clone());
+        if sources.len() > 1 {
+            metadata.insert("sources".to_string(), sources.join(", "));
+        }
+
+        // Tags: always include "skill"; append caller-supplied extras without duplicates.
+        let mut tags = vec![loop_core::LOOP_SKILL_TAG.to_string()];
+        for t in request.tags.unwrap_or_default() {
+            if t != loop_core::LOOP_SKILL_TAG {
+                tags.push(t);
+            }
+        }
+
+        let record = self
+            .backend
+            .store(StoreMemory {
+                content: body,
+                tags,
+                metadata,
+                tier: MemoryTier::L2Scenario,
+                node_id: Some(node_id),
+                created_at: None,
+                scope: None,
+                agent_id: None,
+                session_id: None,
+                task_id: None,
+                user_id: None,
+                source,
+                confidence: None,
+                relations: Vec::new(),
+            })
+            .await
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+
+        Ok(Json(LearnResponse {
+            id: record.id.to_string(),
+            node_id: record.node_id,
+        }))
+    }
+
+    #[tool(
+        name = "memory.skills",
+        description = "List all learned skill records (memories tagged `skill`) with title, \
+usage count (access_count), provenance (source), and last retrieval timestamp. Includes both \
+manually committed skills (`memory.learn`) and skills auto-committed by the loop on verified \
+goal success. Pass by_usage=true to sort by most-used first."
+    )]
+    pub async fn memory_skills(
+        &self,
+        Parameters(request): Parameters<SkillsRequest>,
+    ) -> Result<Json<SkillsResponse>, ErrorData> {
+        let limit = request.limit.unwrap_or(20);
+        let by_usage = request.by_usage.unwrap_or(false);
+
+        // Tag-only query: empty text + non-empty tag filter returns all tag-matched records.
+        let mut query = MemoryQuery::new("").with_limit(limit);
+        query.tags = vec![loop_core::LOOP_SKILL_TAG.to_string()];
+        let mut hits = self
+            .backend
+            .find(query)
+            .await
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+
+        if by_usage {
+            hits.sort_by_key(|h| std::cmp::Reverse(h.record.access_count));
+        }
+
+        let skills = hits
+            .into_iter()
+            .map(|hit| {
+                let rec = hit.record;
+                let title = rec.metadata.get("title").cloned();
+                let last_access = rec.last_access.map(|dt| dt.to_rfc3339());
+                SkillHit {
+                    id: rec.id.to_string(),
+                    node_id: rec.node_id,
+                    content: rec.content,
+                    title,
+                    access_count: rec.access_count,
+                    source: rec.source,
+                    last_access,
+                }
+            })
+            .collect();
+
+        Ok(Json(SkillsResponse { skills }))
     }
 }
 

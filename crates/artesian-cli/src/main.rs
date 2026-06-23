@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::{
+    collections::BTreeMap,
     env, fs,
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -32,7 +33,8 @@ use artesian_process_agent::{
 use clap::{Parser, Subcommand, ValueEnum};
 use flume::loop_core::{
     assemble_goal_packet, loop_recall, loop_run_id, loop_run_log_dir, loop_stop_file,
-    run_loop_core, LoopCommandFuture, LoopCommands, LoopRunOptions,
+    run_loop_core, stable_content_hash, LoopCommandFuture, LoopCommands, LoopRunOptions,
+    LOOP_SKILL_TAG,
 };
 use flume::{
     load_role_definitions, role_summaries, TeamCreate, TeamGcOptions, TeamMessage, TeamMessageKind,
@@ -897,6 +899,60 @@ enum MemoryCommand {
     Anchor {
         #[command(subcommand)]
         command: AnchorCommand,
+    },
+    /// Commit a curated SKILL memory record with provenance and governance.
+    ///
+    /// Unlike flat-file skill stores (e.g. Hermes /learn, deepagents Skills), Artesian skill
+    /// records carry provenance (`source`), usage signals (`access_count`), and participate in
+    /// the normal decay/eviction lifecycle — making them governed, portable, and auditable.
+    ///
+    /// DISCIPLINE: commit a CURATED skill — clear title, polished body, explicit source paths.
+    /// Do not dump raw conversation output; distill it first (`artesian memory distill`).
+    ///
+    /// Re-learning the same title + body is idempotent (content-hash dedup via `node_id`).
+    ///
+    /// Future: skill records are the substrate for PreAct-style guarded procedural replay
+    /// (compiling a skill into a guarded state-machine replayed without model calls). That
+    /// capability is deferred — see docs/skills.md when it is implemented.
+    Learn {
+        /// Short human-readable title for this skill (used as a stable lookup key in listings).
+        title: String,
+        /// Inline body text for the skill. May be combined with --from.
+        #[arg(long)]
+        content: Option<String>,
+        /// File path (or URL recorded as provenance) contributing to the skill body.
+        /// For local paths the file is read and appended to the body; URLs are recorded as
+        /// provenance metadata only (no network fetch in the CLI).
+        /// Repeat to combine multiple sources.
+        #[arg(long = "from")]
+        from: Vec<String>,
+        /// Extra tags to attach (the `skill` tag is always present).
+        #[arg(long = "tag")]
+        tags: Vec<String>,
+        #[arg(long, default_value = DEFAULT_CONFIG)]
+        config: PathBuf,
+        #[arg(long, default_value = ".artesian")]
+        root: PathBuf,
+        #[arg(long, value_enum)]
+        backend: Option<BackendArg>,
+    },
+    /// List learned skills (memories tagged `skill`) with title, usage, provenance, last access.
+    ///
+    /// Shows both manually learned skills (`artesian learn`) and skills auto-committed by the
+    /// autonomous loop on verified goal success.
+    Skills {
+        /// Sort by usage (access_count descending) rather than the default relevance order.
+        #[arg(long)]
+        by_usage: bool,
+        /// Maximum number of skills to return (default 20).
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long, default_value = DEFAULT_CONFIG)]
+        config: PathBuf,
+        #[arg(long, default_value = ".artesian")]
+        root: PathBuf,
+        #[arg(long, value_enum)]
+        backend: Option<BackendArg>,
     },
     /// Evict memories: soft-archive (default) or hard-delete (--hard) by TTL, LRU, or score.
     ///
@@ -2781,6 +2837,133 @@ async fn memory(command: MemoryCommand) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&metrics)?);
         }
         MemoryCommand::Anchor { command } => anchor(command).await?,
+        MemoryCommand::Learn {
+            title,
+            content,
+            from,
+            tags,
+            config,
+            root,
+            backend,
+        } => {
+            let backend = open_backend_for_command(&config, root, backend)?;
+
+            // Assemble the skill body from --content text and --from file reads.
+            let mut body_parts: Vec<String> = Vec::new();
+            if let Some(text) = content {
+                body_parts.push(text);
+            }
+            let mut provenance_sources: Vec<String> = Vec::new();
+            for src in &from {
+                provenance_sources.push(src.clone());
+                // Read local files; URLs are recorded as provenance metadata only (no fetch).
+                if !src.starts_with("http://") && !src.starts_with("https://") {
+                    let text = fs::read_to_string(src)
+                        .with_context(|| format!("read --from file {src}"))?;
+                    body_parts.push(text.trim().to_string());
+                }
+            }
+
+            if body_parts.is_empty() {
+                bail!(
+                    "`artesian learn` requires --content and/or --from <PATH> \
+                     to provide the skill body"
+                );
+            }
+
+            // Canonical body: title as a heading followed by the assembled content.
+            let raw_body = body_parts.join("\n\n");
+            let body = format!("# {title}\n\n{raw_body}");
+
+            // Stable node_id for idempotency: same title + raw body → same node → same record.
+            let hash = stable_content_hash(&format!("{title}\n\n{raw_body}"));
+            let node_id = format!("skill:{hash}");
+
+            // Source provenance: join multiple --from values; fall back to "artesian-learn".
+            let source = if provenance_sources.is_empty() {
+                Some("artesian-learn".to_string())
+            } else {
+                Some(provenance_sources.join(", "))
+            };
+
+            // Metadata: explicit title key (for structured listing) + sources list when multiple.
+            let mut metadata = BTreeMap::<String, String>::new();
+            metadata.insert("title".to_string(), title.clone());
+            if provenance_sources.len() > 1 {
+                metadata.insert("sources".to_string(), provenance_sources.join(", "));
+            }
+
+            // Tags: always include "skill"; append caller-supplied extras.
+            let mut all_tags = vec![LOOP_SKILL_TAG.to_string()];
+            for t in tags {
+                if t != LOOP_SKILL_TAG {
+                    all_tags.push(t);
+                }
+            }
+
+            let record = backend
+                .store(StoreMemory {
+                    content: body,
+                    tags: all_tags,
+                    metadata,
+                    tier: MemoryTier::L2Scenario,
+                    node_id: Some(node_id),
+                    created_at: None,
+                    scope: None,
+                    agent_id: None,
+                    session_id: None,
+                    task_id: None,
+                    user_id: None,
+                    source,
+                    confidence: None,
+                    relations: Vec::new(),
+                })
+                .await?;
+            println!("learned skill id={} node_id={}", record.id, record.node_id);
+        }
+        MemoryCommand::Skills {
+            by_usage,
+            limit,
+            config,
+            root,
+            backend,
+        } => {
+            let backend = open_backend_for_command(&config, root, backend)?;
+
+            // Tag-only query: fetch all active records tagged "skill".
+            // Empty query text with a non-empty tag filter returns all tag-matched records
+            // with score 1.0 (see files backend score_record behaviour).
+            let mut query = MemoryQuery::new("").with_limit(limit);
+            query.tags = vec![LOOP_SKILL_TAG.to_string()];
+            let mut hits = backend.find(query).await?;
+
+            if by_usage {
+                hits.sort_by_key(|h| std::cmp::Reverse(h.record.access_count));
+            }
+
+            if hits.is_empty() {
+                println!("no skills found");
+            } else {
+                for hit in &hits {
+                    let title = hit
+                        .record
+                        .metadata
+                        .get("title")
+                        .cloned()
+                        .unwrap_or_else(|| hit.record.node_id.clone());
+                    let last = hit
+                        .record
+                        .last_access
+                        .map(|dt| dt.format("%Y-%m-%d").to_string())
+                        .unwrap_or_else(|| "-".to_string());
+                    let source = hit.record.source.as_deref().unwrap_or("-");
+                    println!(
+                        "{}\tusage={}\tsource={}\tlast_access={}",
+                        title, hit.record.access_count, source, last
+                    );
+                }
+            }
+        }
         MemoryCommand::Evict {
             ttl_days,
             lru,
