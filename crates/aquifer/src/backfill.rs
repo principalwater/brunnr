@@ -92,7 +92,11 @@ fn collect_memory_paths_into(directory: &Path, paths: &mut Vec<PathBuf>) -> Memo
         let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
-            collect_memory_paths_into(&path, paths)?;
+            // Never descend into hidden dirs (.git/.claude/.fastembed_cache/.artesian/…) or common
+            // vendor/build/cache dirs — they hold tooling config and model caches, not memory notes.
+            if !is_skippable_dir(&path) {
+                collect_memory_paths_into(&path, paths)?;
+            }
         } else if path.extension().is_some_and(|extension| {
             extension.eq_ignore_ascii_case("md") || extension.eq_ignore_ascii_case("json")
         }) && !is_reserved_okf_file(&path)
@@ -101,6 +105,21 @@ fn collect_memory_paths_into(directory: &Path, paths: &mut Vec<PathBuf>) -> Memo
         }
     }
     Ok(())
+}
+
+/// Directories that never hold user memory notes: hidden dirs (any name starting with `.`, e.g.
+/// `.git`, `.claude`, `.fastembed_cache`, `.artesian`, `.venv`) and common vendor/build/cache dirs.
+/// Skipping them keeps the import from trying to parse tooling config and model-cache files (e.g. a
+/// million-line `tokenizer.json`) as memory.
+fn is_skippable_dir(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    name.starts_with('.')
+        || matches!(
+            name,
+            "node_modules" | "target" | "__pycache__" | "venv" | "dist" | "build" | "vendor"
+        )
 }
 
 pub fn parse_memory_path(path: &Path) -> MemoryResult<Vec<StoreMemory>> {
@@ -312,4 +331,42 @@ fn is_reserved_okf_file(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
         .is_some_and(|name| matches!(name, "index.md" | "log.md"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn collect_memory_paths_skips_hidden_and_vendor_dirs() {
+        let tmp = std::env::temp_dir().join(format!("artesian-collect-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("sub")).unwrap();
+        std::fs::write(tmp.join("notes.md"), "# note").unwrap();
+        std::fs::write(tmp.join("sub").join("more.md"), "# more").unwrap();
+        // Tooling config / model cache / vendor dirs that must NOT be scanned as memory.
+        for (dir, file) in [
+            (".claude", "settings.local.json"),
+            (".fastembed_cache", "tokenizer.json"),
+            (".git", "config"),
+            ("node_modules", "pkg.md"),
+            ("target", "build.json"),
+        ] {
+            std::fs::create_dir_all(tmp.join(dir)).unwrap();
+            std::fs::write(tmp.join(dir).join(file), "{}").unwrap();
+        }
+        let mut got: Vec<String> = collect_memory_paths(&tmp)
+            .unwrap()
+            .into_iter()
+            .map(|path| {
+                path.strip_prefix(&tmp)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect();
+        got.sort();
+        assert_eq!(got, vec!["notes.md".to_string(), "sub/more.md".to_string()]);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }
