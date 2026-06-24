@@ -19,7 +19,7 @@ Artesian keeps agent memory small, high-signal, and survivable across compaction
 - **Private, zero-cost writes** — no per-write LLM call; local by default; LLM judge, consolidation, and compression are opt-in.
 - **Composable** — ACC over any vector store; Qdrant / pgvector / sqlite-vec / files / mem0; bring your own judge and compressor; any MCP agent.
 
-## How it works (30s)
+## How it works
 
 ```
 recall candidates (from durable memory)
@@ -39,14 +39,17 @@ durable memory (sqlite-vec / Qdrant / pgvector / files)
         ↑ anchor + targeted recall on any compaction
 ```
 
-## Get started (60s)
+## Get started
 
 ```shell
-cargo install --git https://github.com/aquifer-labs/artesian artesian-cli
+# Install — pre-built binary, no Rust toolchain (macOS + Linux):
+brew install aquifer-labs/tap/artesian
+# (or build from source: cargo install --git https://github.com/aquifer-labs/artesian artesian-cli)
+
 artesian init --backend sqlite-vec        # zero infrastructure
 artesian memory store "chose Rust+tokio" --tag decision
 artesian memory find "which language"
-artesian perf                             # tokens saved + compaction-survival check
+artesian tokens                           # how many tokens recall has saved so far
 ```
 
 MCP drop-in (Claude Code, Codex, opencode — any MCP client):
