@@ -37,3 +37,7 @@ benchmarks/comparison/data/
 
 # MkDocs build output (the Pages workflow builds fresh)
 /site/
+
+# Artesian runtime memory bundles generated when the server/CLI runs inside a crate dir
+crates/*/memory/
+crates/*/.artesian/
