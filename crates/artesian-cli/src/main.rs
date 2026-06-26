@@ -1689,8 +1689,8 @@ async fn doctor(config_path: PathBuf, root: PathBuf, backend: Option<BackendArg>
     }
 }
 
-/// Update Artesian via Homebrew (if present), then point at `artesian doctor`. A convenience
-/// wrapper — the package manager owns the binary; config, MCP registrations, and stored memory are
+/// Update Artesian via Homebrew (if present and managing this binary), then point at
+/// `artesian doctor`. A convenience wrapper — config, MCP registrations, and stored memory are
 /// untouched.
 fn update() -> Result<()> {
     let brew_available = std::process::Command::new("brew")
@@ -1700,21 +1700,44 @@ fn update() -> Result<()> {
         .status()
         .map(|status| status.success())
         .unwrap_or(false);
-    if brew_available {
-        println!("Updating Artesian via Homebrew…");
-        if !run_shell("brew upgrade aquifer-labs/tap/artesian")? {
-            eprintln!("note: brew reported a non-zero exit (e.g. already up to date)");
-        }
-        println!("\nNext: run `artesian doctor` to verify the install and your setup survived the upgrade.");
-    } else {
+
+    if !brew_available {
         println!(
             "Homebrew not found — update with your install method, then run `artesian doctor`:"
         );
-        println!("  brew upgrade aquifer-labs/tap/artesian");
+        println!("  brew install aquifer-labs/tap/artesian  # to hand over to Homebrew");
         println!(
             "  or download the latest binary: https://github.com/aquifer-labs/artesian/releases"
         );
+        return Ok(());
     }
+
+    // Homebrew is present — but it only manages binaries it installed. Check before upgrading.
+    let brew_managed = std::process::Command::new("brew")
+        .args(["list", "aquifer-labs/tap/artesian"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false);
+
+    if !brew_managed {
+        let exe = std::env::current_exe()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "<unknown>".to_string());
+        println!("Artesian is not managed by Homebrew (binary: {exe}).");
+        println!("To hand over management to Homebrew and enable `artesian update`:");
+        println!("  brew install aquifer-labs/tap/artesian");
+        println!("Or update your manual install, then run `artesian doctor`.");
+        println!("  Latest release: https://github.com/aquifer-labs/artesian/releases");
+        return Ok(());
+    }
+
+    println!("Updating Artesian via Homebrew…");
+    if !run_shell("brew upgrade aquifer-labs/tap/artesian")? {
+        eprintln!("note: brew reported a non-zero exit (e.g. already up to date)");
+    }
+    println!("\nNext: run `artesian doctor` to verify the install and your setup survived the upgrade.");
     Ok(())
 }
 
