@@ -89,8 +89,9 @@ pub use temporal::{
 };
 pub use txn::{sync_okf_directory, CommitLog, SyncReport, TransactionalMemory, TxnError, TxnSeq};
 pub use types::{
-    MemoryError, MemoryId, MemoryQuery, MemoryRecord, MemoryResult, MemoryScope, MemoryState,
-    MemoryTier, RrfOptions, SearchHit, SearchSource, StoreMemory,
+    insert_skill_procedure_metadata, skill_procedure_from_metadata, MemoryError, MemoryId,
+    MemoryQuery, MemoryRecord, MemoryResult, MemoryScope, MemoryState, MemoryTier, ProcedureStep,
+    RrfOptions, SearchHit, SearchSource, StoreMemory, SKILL_PROCEDURE_METADATA_KEY,
 };
 pub use upgrade::{
     default_migration_collection, export_okf_bundle, migrate_okf_bundle, migration_manifest_path,

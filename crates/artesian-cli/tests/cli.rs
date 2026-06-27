@@ -570,6 +570,175 @@ fn cli_learn_and_skills_list() {
     );
 }
 
+#[test]
+fn cli_skill_replay_guards_dry_run_and_savings() {
+    let tempdir = TempDir::new("cli-skill-replay");
+    let binary = env!("CARGO_BIN_EXE_artesian");
+    let root = tempdir.join(".artesian");
+    let stats_dir = tempdir.join("stats");
+    let marker = tempdir.join("replayed.txt");
+    let failed_marker = tempdir.join("failed.txt");
+    let run_cmd = format!("printf replayed > {}", marker.to_str().expect("utf8 path"));
+    let fail_run_cmd = format!(
+        "printf should-not-run > {}",
+        failed_marker.to_str().expect("utf8 path")
+    );
+
+    let learn = Command::new(binary)
+        .args([
+            "memory",
+            "learn",
+            "ReplaySkill",
+            "--content",
+            "Replay this procedure",
+            "--root",
+            root.to_str().expect("utf8"),
+        ])
+        .arg("--step")
+        .arg(&run_cmd)
+        .args(["--guard", "true"])
+        .current_dir(tempdir.path())
+        .output()
+        .expect("learn procedural skill should run");
+    assert!(learn.status.success(), "{}", stderr(&learn));
+
+    let dry_run = Command::new(binary)
+        .args([
+            "skill",
+            "replay",
+            "ReplaySkill",
+            "--root",
+            root.to_str().expect("utf8"),
+        ])
+        .current_dir(tempdir.path())
+        .output()
+        .expect("dry-run replay should run");
+    assert!(dry_run.status.success(), "{}", stderr(&dry_run));
+    let dry_out = stdout(&dry_run);
+    assert!(dry_out.contains("status=dry-run"), "{dry_out}");
+    assert!(dry_out.contains("run_status=not-run"), "{dry_out}");
+    assert!(
+        !marker.exists(),
+        "dry-run must not execute guard or run commands"
+    );
+
+    let execute = Command::new(binary)
+        .args([
+            "skill",
+            "replay",
+            "ReplaySkill",
+            "--execute",
+            "--root",
+            root.to_str().expect("utf8"),
+        ])
+        .env("ARTESIAN_STATS_DIR", &stats_dir)
+        .current_dir(tempdir.path())
+        .output()
+        .expect("execute replay should run");
+    assert!(execute.status.success(), "{}", stderr(&execute));
+    let execute_out = stdout(&execute);
+    assert!(execute_out.contains("status=success"), "{execute_out}");
+    assert!(execute_out.contains("guard_status=passed"), "{execute_out}");
+    assert!(execute_out.contains("run_status=passed"), "{execute_out}");
+    assert_eq!(
+        std::fs::read_to_string(&marker).expect("marker should exist"),
+        "replayed"
+    );
+    let savings = std::fs::read_to_string(stats_dir.join("token_savings.jsonl"))
+        .expect("skill replay should record savings");
+    assert!(
+        savings.contains("\"op\":\"skill.replay\""),
+        "savings should include skill.replay: {savings}"
+    );
+    assert!(
+        savings.contains("\"returned_tokens\":0"),
+        "guarded replay returns no prompt tokens: {savings}"
+    );
+
+    let learn_fail = Command::new(binary)
+        .args([
+            "memory",
+            "learn",
+            "FailReplaySkill",
+            "--content",
+            "Replay aborts when the guard fails",
+            "--root",
+            root.to_str().expect("utf8"),
+        ])
+        .arg("--step")
+        .arg(&fail_run_cmd)
+        .args(["--guard", "false"])
+        .current_dir(tempdir.path())
+        .output()
+        .expect("learn failing guarded skill should run");
+    assert!(learn_fail.status.success(), "{}", stderr(&learn_fail));
+
+    let guard_fail = Command::new(binary)
+        .args([
+            "skill",
+            "replay",
+            "FailReplaySkill",
+            "--execute",
+            "--root",
+            root.to_str().expect("utf8"),
+        ])
+        .current_dir(tempdir.path())
+        .output()
+        .expect("guard-failed replay should run");
+    assert!(guard_fail.status.success(), "{}", stderr(&guard_fail));
+    let guard_fail_out = stdout(&guard_fail);
+    assert!(
+        guard_fail_out.contains("status=guard-failed"),
+        "{guard_fail_out}"
+    );
+    assert!(guard_fail_out.contains("fallback=true"), "{guard_fail_out}");
+    assert!(
+        guard_fail_out.contains("Proceed with normal reasoning"),
+        "{guard_fail_out}"
+    );
+    assert!(
+        !failed_marker.exists(),
+        "failed guard must abort before the run command"
+    );
+
+    let learn_plain = Command::new(binary)
+        .args([
+            "memory",
+            "learn",
+            "PlainSkill",
+            "--content",
+            "A prose-only skill",
+            "--root",
+            root.to_str().expect("utf8"),
+        ])
+        .current_dir(tempdir.path())
+        .output()
+        .expect("learn plain skill should run");
+    assert!(learn_plain.status.success(), "{}", stderr(&learn_plain));
+
+    let no_procedure = Command::new(binary)
+        .args([
+            "skill",
+            "replay",
+            "PlainSkill",
+            "--root",
+            root.to_str().expect("utf8"),
+        ])
+        .current_dir(tempdir.path())
+        .output()
+        .expect("plain skill replay should run");
+    assert!(no_procedure.status.success(), "{}", stderr(&no_procedure));
+    let no_procedure_out = stdout(&no_procedure);
+    assert!(
+        no_procedure_out.contains("status=no-procedure"),
+        "{no_procedure_out}"
+    );
+    assert!(
+        no_procedure_out.contains("has no procedure"),
+        "{no_procedure_out}"
+    );
+}
+
 /// `memory find` writes a savings entry to ARTESIAN_STATS_DIR and `artesian tokens` reflects it.
 #[test]
 fn memory_find_records_savings_entry_and_tokens_reflects_it() {

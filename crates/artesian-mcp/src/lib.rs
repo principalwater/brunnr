@@ -14,10 +14,11 @@ use std::{
 use std::env;
 
 use aquifer::{
-    AnchorAnchorStore, FilesBackend, MemoryBackend, MemoryQuery, MemoryScope, MemoryTier, Relation,
-    SearchHit, SessionAnchor, SessionKey, SessionStore, SessionSummary, SqliteVecVectorStore,
-    SqliteVecVectorStoreConfig, StoreMemory, VectorMemoryBackend, VectorMemoryConfig,
-    SESSION_RECORD_TAG,
+    insert_skill_procedure_metadata, skill_procedure_from_metadata, AnchorAnchorStore,
+    FilesBackend, MemoryBackend, MemoryQuery, MemoryRecord, MemoryScope, MemoryTier, ProcedureStep,
+    Relation, SearchHit, SessionAnchor, SessionKey, SessionStore, SessionSummary,
+    SqliteVecVectorStore, SqliteVecVectorStoreConfig, StoreMemory, VectorMemoryBackend,
+    VectorMemoryConfig, SESSION_RECORD_TAG, SKILL_PROCEDURE_METADATA_KEY,
 };
 use artesian_core::{
     AccConfig, Agent, AgentBinding, AgentCatalog, AgentMessage, ArtesianConfig, MemoryBackendKind,
@@ -589,10 +590,8 @@ pub struct StoreResponse {
 /// DISCIPLINE: commit a CURATED skill — clear title, polished body, explicit sources.
 ///
 /// Re-learning the same title + content is idempotent (content-hash dedup via `node_id`).
-///
-/// Future capability (deferred): skill records are the substrate for PreAct-style guarded
-/// procedural replay — compiling a skill into a guarded state-machine replayed without model
-/// calls. That capability is not yet implemented; see docs/skills.md when available.
+/// When `procedure` is supplied, it is stored additively in record metadata and participates in
+/// the skill identity so procedural and non-procedural versions do not overwrite each other.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct LearnRequest {
     /// Short human-readable title for the skill (used as a stable lookup key in listings).
@@ -605,6 +604,8 @@ pub struct LearnRequest {
     pub sources: Option<Vec<String>>,
     /// Additional tags to attach (the `skill` tag is always included automatically).
     pub tags: Option<Vec<String>>,
+    /// Optional guarded procedure for replay without per-step model calls.
+    pub procedure: Option<Vec<SkillProcedureStep>>,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -613,6 +614,33 @@ pub struct LearnResponse {
     pub id: String,
     /// Stable node_id (`skill:<hash>`); use this to retrieve the skill by node_id.
     pub node_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct SkillProcedureStep {
+    /// Shell command/action to run for this step.
+    pub run: String,
+    /// Optional precondition check. Exit 0 means the guard holds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guard: Option<String>,
+}
+
+impl From<ProcedureStep> for SkillProcedureStep {
+    fn from(step: ProcedureStep) -> Self {
+        Self {
+            run: step.run,
+            guard: step.guard,
+        }
+    }
+}
+
+impl From<SkillProcedureStep> for ProcedureStep {
+    fn from(step: SkillProcedureStep) -> Self {
+        Self {
+            run: step.run,
+            guard: step.guard,
+        }
+    }
 }
 
 /// A single skill entry returned by `memory.skills`.
@@ -634,6 +662,9 @@ pub struct SkillHit {
     /// ISO-8601 timestamp of the most recent retrieval (`None` if never retrieved).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_access: Option<String>,
+    /// Optional guarded procedure stored on this skill.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub procedure: Option<Vec<SkillProcedureStep>>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -647,6 +678,44 @@ pub struct SkillsRequest {
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct SkillsResponse {
     pub skills: Vec<SkillHit>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SkillReplayRequest {
+    /// Human-readable skill title to replay.
+    pub title: String,
+    /// Execute run commands only when explicitly true. Defaults to false (dry-run).
+    pub execute: Option<bool>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct SkillReplayStepResult {
+    pub index: usize,
+    pub run: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub guard: Option<String>,
+    /// `passed`, `failed`, or `not-run`.
+    pub guard_status: String,
+    /// `passed`, `failed`, or `not-run`.
+    pub run_status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub guard_output: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_output: Option<String>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct SkillReplayResponse {
+    pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<String>,
+    pub execute: bool,
+    /// `dry-run`, `success`, `guard-failed`, `run-failed`, `no-procedure`, or `not-found`.
+    pub status: String,
+    pub message: String,
+    /// True when the caller should abandon replay and proceed with normal reasoning.
+    pub fallback: bool,
+    pub steps: Vec<SkillReplayStepResult>,
 }
 
 pub async fn answer_memory(
@@ -671,6 +740,233 @@ pub async fn answer_memory(
         extractive: true,
         sources,
     })
+}
+
+pub fn normalize_skill_procedure(
+    procedure: Vec<ProcedureStep>,
+) -> anyhow::Result<Vec<ProcedureStep>> {
+    procedure
+        .into_iter()
+        .enumerate()
+        .map(|(index, step)| {
+            let run = step.run.trim().to_string();
+            if run.is_empty() {
+                anyhow::bail!("procedure step {} has an empty run command", index + 1);
+            }
+            let guard = step.guard.and_then(|guard| {
+                let guard = guard.trim().to_string();
+                (!guard.is_empty()).then_some(guard)
+            });
+            Ok(ProcedureStep { run, guard })
+        })
+        .collect()
+}
+
+pub fn skill_identity_material(
+    title: &str,
+    content: &str,
+    procedure: &[ProcedureStep],
+) -> anyhow::Result<String> {
+    let mut material = format!("{title}\n\n{content}");
+    if !procedure.is_empty() {
+        material.push_str("\n\nprocedure:");
+        material.push_str(&serde_json::to_string(procedure)?);
+    }
+    Ok(material)
+}
+
+pub async fn replay_skill_procedure(
+    backend: &dyn MemoryBackend,
+    title: &str,
+    execute: bool,
+    collection: &str,
+    track_savings: bool,
+) -> anyhow::Result<SkillReplayResponse> {
+    let Some(skill) = find_skill_by_title(backend, title).await? else {
+        return Ok(SkillReplayResponse {
+            title: title.to_string(),
+            node_id: None,
+            execute,
+            status: "not-found".to_string(),
+            message: format!("skill `{title}` was not found"),
+            fallback: true,
+            steps: Vec::new(),
+        });
+    };
+    let procedure = skill_procedure_from_metadata(&skill.metadata)?.unwrap_or_default();
+    if procedure.is_empty() {
+        return Ok(SkillReplayResponse {
+            title: skill_title(&skill).unwrap_or_else(|| title.to_string()),
+            node_id: Some(skill.node_id),
+            execute,
+            status: "no-procedure".to_string(),
+            message: format!("skill `{title}` has no procedure; proceed with normal reasoning"),
+            fallback: true,
+            steps: Vec::new(),
+        });
+    }
+
+    let mut steps = replay_plan_steps(&procedure);
+    if !execute {
+        return Ok(SkillReplayResponse {
+            title: skill_title(&skill).unwrap_or_else(|| title.to_string()),
+            node_id: Some(skill.node_id),
+            execute,
+            status: "dry-run".to_string(),
+            message: "dry-run: no guard or run commands executed".to_string(),
+            fallback: false,
+            steps,
+        });
+    }
+
+    for (index, step) in procedure.iter().enumerate() {
+        if let Some(guard) = &step.guard {
+            let (passed, output) = mcp_run_shell_capture(guard, Vec::new(), None).await?;
+            steps[index].guard_status = if passed { "passed" } else { "failed" }.to_string();
+            if !output.is_empty() {
+                steps[index].guard_output = Some(output);
+            }
+            if !passed {
+                return Ok(SkillReplayResponse {
+                    title: skill_title(&skill).unwrap_or_else(|| title.to_string()),
+                    node_id: Some(skill.node_id),
+                    execute,
+                    status: "guard-failed".to_string(),
+                    message: format!(
+                        "guard failed at step {}; replay aborted. Proceed with normal reasoning.",
+                        index + 1
+                    ),
+                    fallback: true,
+                    steps,
+                });
+            }
+        }
+
+        let (passed, output) = mcp_run_shell_capture(&step.run, Vec::new(), None).await?;
+        steps[index].run_status = if passed { "passed" } else { "failed" }.to_string();
+        if !output.is_empty() {
+            steps[index].run_output = Some(output);
+        }
+        if !passed {
+            return Ok(SkillReplayResponse {
+                title: skill_title(&skill).unwrap_or_else(|| title.to_string()),
+                node_id: Some(skill.node_id),
+                execute,
+                status: "run-failed".to_string(),
+                message: format!(
+                    "run command failed at step {}; replay aborted. Proceed with normal reasoning.",
+                    index + 1
+                ),
+                fallback: true,
+                steps,
+            });
+        }
+    }
+
+    record_savings(
+        "skill.replay",
+        collection,
+        0,
+        count_tokens(&skill.content),
+        track_savings,
+    );
+
+    Ok(SkillReplayResponse {
+        title: skill_title(&skill).unwrap_or_else(|| title.to_string()),
+        node_id: Some(skill.node_id),
+        execute,
+        status: "success".to_string(),
+        message: format!("guarded replay completed {} step(s)", steps.len()),
+        fallback: false,
+        steps,
+    })
+}
+
+async fn find_skill_by_title(
+    backend: &dyn MemoryBackend,
+    title: &str,
+) -> anyhow::Result<Option<MemoryRecord>> {
+    let mut records = query_skill_records(backend, title, 50).await?;
+    if records
+        .iter()
+        .all(|record| !skill_title_matches(record, title))
+    {
+        records.extend(query_skill_records(backend, "", 1_000).await?);
+    }
+
+    let mut deduped = HashMap::<String, MemoryRecord>::new();
+    for record in records {
+        deduped.entry(record.node_id.clone()).or_insert(record);
+    }
+    let mut matches = deduped
+        .into_values()
+        .filter(|record| skill_title_matches(record, title))
+        .collect::<Vec<_>>();
+    matches.sort_by(|left, right| {
+        skill_replay_rank(right)
+            .cmp(&skill_replay_rank(left))
+            .then_with(|| right.created_at.cmp(&left.created_at))
+    });
+    Ok(matches.into_iter().next())
+}
+
+async fn query_skill_records(
+    backend: &dyn MemoryBackend,
+    text: &str,
+    limit: usize,
+) -> anyhow::Result<Vec<MemoryRecord>> {
+    let mut query = MemoryQuery::new(text.to_string()).with_limit(limit);
+    query.tags = vec![loop_core::LOOP_SKILL_TAG.to_string()];
+    Ok(backend
+        .find(query)
+        .await?
+        .into_iter()
+        .map(|hit| hit.record)
+        .collect())
+}
+
+fn skill_replay_rank(record: &MemoryRecord) -> u8 {
+    u8::from(record.metadata.contains_key(SKILL_PROCEDURE_METADATA_KEY))
+}
+
+fn skill_title_matches(record: &MemoryRecord, title: &str) -> bool {
+    record.node_id == title
+        || record
+            .metadata
+            .get("title")
+            .is_some_and(|value| value == title)
+        || record
+            .content
+            .lines()
+            .next()
+            .is_some_and(|line| line == format!("# {title}"))
+}
+
+fn skill_title(record: &MemoryRecord) -> Option<String> {
+    record.metadata.get("title").cloned().or_else(|| {
+        record
+            .content
+            .lines()
+            .next()
+            .and_then(|line| line.strip_prefix("# "))
+            .map(str::to_string)
+    })
+}
+
+fn replay_plan_steps(procedure: &[ProcedureStep]) -> Vec<SkillReplayStepResult> {
+    procedure
+        .iter()
+        .enumerate()
+        .map(|(index, step)| SkillReplayStepResult {
+            index: index + 1,
+            run: step.run.clone(),
+            guard: step.guard.clone(),
+            guard_status: "not-run".to_string(),
+            run_status: "not-run".to_string(),
+            guard_output: None,
+            run_output: None,
+        })
+        .collect()
 }
 
 fn answer_sources(hits: &[SearchHit]) -> Vec<String> {
@@ -2962,18 +3258,29 @@ Unlike flat-file skill stores (Hermes /learn, deepagents Skills), Artesian skill
 provenance (sources), usage signals (access_count), and participate in the normal decay/eviction \
 lifecycle. DISCIPLINE: commit a curated skill — clear title, polished body, explicit sources. \
 Re-learning the same title+content is idempotent (content-hash node_id dedup). \
-Skill records are the future substrate for PreAct-style guarded procedural replay (deferred)."
+Optional procedure steps enable guarded replay without per-step model calls."
     )]
     pub async fn memory_learn(
         &self,
         Parameters(request): Parameters<LearnRequest>,
     ) -> Result<Json<LearnResponse>, ErrorData> {
+        let procedure = normalize_skill_procedure(
+            request
+                .procedure
+                .unwrap_or_default()
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+        )
+        .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
+
         // Canonical body: title as a heading followed by the skill content.
         let body = format!("# {}\n\n{}", request.title, request.content);
 
         // Stable node_id: same title + content → same hash → idempotent re-store.
-        let hash =
-            loop_core::stable_content_hash(&format!("{}\n\n{}", request.title, request.content));
+        let identity = skill_identity_material(&request.title, &request.content, &procedure)
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        let hash = loop_core::stable_content_hash(&identity);
         let node_id = format!("skill:{hash}");
 
         // Provenance: join supplied sources; fall back to "artesian-learn".
@@ -2990,6 +3297,8 @@ Skill records are the future substrate for PreAct-style guarded procedural repla
         if sources.len() > 1 {
             metadata.insert("sources".to_string(), sources.join(", "));
         }
+        insert_skill_procedure_metadata(&mut metadata, &procedure)
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
 
         // Tags: always include "skill"; append caller-supplied extras without duplicates.
         let mut tags = vec![loop_core::LOOP_SKILL_TAG.to_string()];
@@ -3059,7 +3368,10 @@ goal success. Pass by_usage=true to sort by most-used first."
                 let rec = hit.record;
                 let title = rec.metadata.get("title").cloned();
                 let last_access = rec.last_access.map(|dt| dt.to_rfc3339());
-                SkillHit {
+                let procedure = skill_procedure_from_metadata(&rec.metadata)
+                    .map_err(|error| ErrorData::internal_error(error.to_string(), None))?
+                    .map(|procedure| procedure.into_iter().map(Into::into).collect());
+                Ok(SkillHit {
                     id: rec.id.to_string(),
                     node_id: rec.node_id,
                     content: rec.content,
@@ -3067,11 +3379,34 @@ goal success. Pass by_usage=true to sort by most-used first."
                     access_count: rec.access_count,
                     source: rec.source,
                     last_access,
-                }
+                    procedure,
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>, ErrorData>>()?;
 
         Ok(Json(SkillsResponse { skills }))
+    }
+
+    #[tool(
+        name = "memory.skill.replay",
+        description = "Dry-run or explicitly execute a learned skill's guarded procedure. \
+Default execute=false runs no commands. With execute=true, each guard must pass before its run \
+command executes; guard mismatch aborts replay and tells the caller to proceed with normal reasoning."
+    )]
+    pub async fn memory_skill_replay(
+        &self,
+        Parameters(request): Parameters<SkillReplayRequest>,
+    ) -> Result<Json<SkillReplayResponse>, ErrorData> {
+        let response = replay_skill_procedure(
+            self.backend.as_ref(),
+            &request.title,
+            request.execute.unwrap_or(false),
+            &self.collection,
+            self.track_savings,
+        )
+        .await
+        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        Ok(Json(response))
     }
 }
 

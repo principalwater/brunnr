@@ -2,7 +2,9 @@
 
 use std::{
     collections::BTreeMap,
-    env, fs,
+    env,
+    ffi::OsString,
+    fs,
     io::{Read, Write},
     path::{Path, PathBuf},
     process::Stdio,
@@ -14,10 +16,11 @@ use std::{
 use anyhow::{bail, Context, Result};
 use aquifer::{
     append_eviction_log, consolidation_pass, default_migration_collection, entity_timeline, evict,
-    export_okf_bundle, recover_after_compaction, verify_okf_bundle, AnchorAnchorStore,
-    CollectionCompat, ConsolidationOptions, DecayConfig, EvictionPolicy, MemoryBackend,
-    MemoryQuery, MemoryRecord, MemoryScope, MemoryState, MemoryTier, MigrationPlan, SearchHit,
-    SessionAnchor, SessionKey, SessionListFilter, SessionStore, StoreMemory, VectorMemoryConfig,
+    export_okf_bundle, insert_skill_procedure_metadata, recover_after_compaction,
+    verify_okf_bundle, AnchorAnchorStore, CollectionCompat, ConsolidationOptions, DecayConfig,
+    EvictionPolicy, MemoryBackend, MemoryQuery, MemoryRecord, MemoryScope, MemoryState, MemoryTier,
+    MigrationPlan, ProcedureStep, SearchHit, SessionAnchor, SessionKey, SessionListFilter,
+    SessionStore, StoreMemory, VectorMemoryConfig,
 };
 use artesian_core::{
     Agent, AgentBinding, ArtesianConfig, MemoryBackendKind, MemoryConfig, Mode, Role, SpawnRequest,
@@ -175,6 +178,10 @@ enum Command {
     Memory {
         #[command(subcommand)]
         command: MemoryCommand,
+    },
+    Skill {
+        #[command(subcommand)]
+        command: SkillCommand,
     },
     /// Print the committed resume packet for a cross-agent session.
     Handoff {
@@ -925,10 +932,7 @@ enum MemoryCommand {
     /// Do not dump raw conversation output; distill it first (`artesian memory distill`).
     ///
     /// Re-learning the same title + body is idempotent (content-hash dedup via `node_id`).
-    ///
-    /// Future: skill records are the substrate for PreAct-style guarded procedural replay
-    /// (compiling a skill into a guarded state-machine replayed without model calls). That
-    /// capability is deferred — see docs/skills.md when it is implemented.
+    /// Supplying `--step` stores an ordered guarded procedure for `artesian skill replay`.
     Learn {
         /// Short human-readable title for this skill (used as a stable lookup key in listings).
         title: String,
@@ -944,6 +948,12 @@ enum MemoryCommand {
         /// Extra tags to attach (the `skill` tag is always present).
         #[arg(long = "tag")]
         tags: Vec<String>,
+        /// Add a replayable shell command/action step. Repeat for ordered procedures.
+        #[arg(long = "step")]
+        steps: Vec<String>,
+        /// Attach a precondition check to the preceding --step. Exit 0 means the guard holds.
+        #[arg(long = "guard")]
+        guards: Vec<String>,
         #[arg(long, default_value = DEFAULT_CONFIG)]
         config: PathBuf,
         #[arg(long, default_value = ".artesian")]
@@ -1017,6 +1027,27 @@ enum MemoryCommand {
         /// Dry-run: print what would be archived/deleted without changing any data.
         #[arg(long, default_value_t = false)]
         dry_run: bool,
+        #[arg(long, default_value = DEFAULT_CONFIG)]
+        config: PathBuf,
+        #[arg(long, default_value = ".artesian")]
+        root: PathBuf,
+        #[arg(long, value_enum)]
+        backend: Option<BackendArg>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum SkillCommand {
+    /// Replay a learned skill's guarded procedure.
+    Replay {
+        /// Skill title to replay.
+        title: String,
+        /// Print the plan without running guards or step commands. This is the default.
+        #[arg(long, conflicts_with = "execute")]
+        dry_run: bool,
+        /// Execute the guarded replay. Each guard must pass before its step command runs.
+        #[arg(long, conflicts_with = "dry_run")]
+        execute: bool,
         #[arg(long, default_value = DEFAULT_CONFIG)]
         config: PathBuf,
         #[arg(long, default_value = ".artesian")]
@@ -1170,7 +1201,8 @@ async fn main() -> Result<()> {
         Some("artesiand") => return artesiand::run().await,
         _ => {}
     }
-    let cli = Cli::parse();
+    let raw_args: Vec<OsString> = std::env::args_os().collect();
+    let cli = Cli::parse_from(raw_args.clone());
     match cli.command {
         Command::Init {
             memory_root,
@@ -1221,7 +1253,8 @@ async fn main() -> Result<()> {
             dry_run,
             once,
         } => run_orchestrator(config, root, dry_run, once).await,
-        Command::Memory { command } => memory(command).await,
+        Command::Memory { command } => memory(command, &raw_args).await,
+        Command::Skill { command } => skill(command).await,
         Command::Handoff {
             session_id,
             user_id,
@@ -2596,7 +2629,7 @@ async fn run_orchestrator(
     Ok(())
 }
 
-async fn memory(command: MemoryCommand) -> Result<()> {
+async fn memory(command: MemoryCommand, raw_args: &[OsString]) -> Result<()> {
     match command {
         MemoryCommand::Store {
             content,
@@ -2865,11 +2898,14 @@ async fn memory(command: MemoryCommand) -> Result<()> {
             content,
             from,
             tags,
+            steps,
+            guards,
             config,
             root,
             backend,
         } => {
             let backend = open_backend_for_command(&config, root, backend)?;
+            let procedure = learn_procedure_from_args(steps, guards, raw_args)?;
 
             // Assemble the skill body from --content text and --from file reads.
             let mut body_parts: Vec<String> = Vec::new();
@@ -2898,8 +2934,10 @@ async fn memory(command: MemoryCommand) -> Result<()> {
             let raw_body = body_parts.join("\n\n");
             let body = format!("# {title}\n\n{raw_body}");
 
-            // Stable node_id for idempotency: same title + raw body → same node → same record.
-            let hash = stable_content_hash(&format!("{title}\n\n{raw_body}"));
+            // Stable node_id for idempotency. A procedure participates in identity so adding
+            // guarded replay steps to an existing prose skill creates a procedural variant.
+            let identity = artesian_mcp::skill_identity_material(&title, &raw_body, &procedure)?;
+            let hash = stable_content_hash(&identity);
             let node_id = format!("skill:{hash}");
 
             // Source provenance: join multiple --from values; fall back to "artesian-learn".
@@ -2915,6 +2953,7 @@ async fn memory(command: MemoryCommand) -> Result<()> {
             if provenance_sources.len() > 1 {
                 metadata.insert("sources".to_string(), provenance_sources.join(", "));
             }
+            insert_skill_procedure_metadata(&mut metadata, &procedure)?;
 
             // Tags: always include "skill"; append caller-supplied extras.
             let mut all_tags = vec![LOOP_SKILL_TAG.to_string()];
@@ -3064,6 +3103,171 @@ async fn memory(command: MemoryCommand) -> Result<()> {
         }
     }
     Ok(())
+}
+
+async fn skill(command: SkillCommand) -> Result<()> {
+    match command {
+        SkillCommand::Replay {
+            title,
+            dry_run,
+            execute,
+            config,
+            root,
+            backend,
+        } => {
+            let memory_config = memory_config_for_command(&config, root, backend)?;
+            let backend = open_memory_backend(&memory_config)?;
+            let response = artesian_mcp::replay_skill_procedure(
+                backend.as_ref(),
+                &title,
+                execute && !dry_run,
+                &memory_config.collection,
+                memory_config.track_savings,
+            )
+            .await?;
+            print_skill_replay_response(&response);
+        }
+    }
+    Ok(())
+}
+
+fn print_skill_replay_response(response: &artesian_mcp::SkillReplayResponse) {
+    println!("# skill replay: {}", response.title);
+    if let Some(node_id) = &response.node_id {
+        println!("node_id={node_id}");
+    }
+    println!(
+        "status={} execute={} fallback={}",
+        response.status, response.execute, response.fallback
+    );
+    println!("{}", response.message);
+    for step in &response.steps {
+        println!("step {}:", step.index);
+        if let Some(guard) = &step.guard {
+            println!("  guard: {guard}");
+            println!("  guard_status={}", step.guard_status);
+            print_replay_output("guard_output", step.guard_output.as_deref());
+        } else {
+            println!("  guard_status=not-run");
+        }
+        println!("  run: {}", step.run);
+        println!("  run_status={}", step.run_status);
+        print_replay_output("run_output", step.run_output.as_deref());
+    }
+}
+
+fn print_replay_output(label: &str, output: Option<&str>) {
+    let Some(output) = output.filter(|output| !output.is_empty()) else {
+        return;
+    };
+    let indented = output.replace('\n', "\n    ");
+    println!("  {label}: {indented}");
+}
+
+fn learn_procedure_from_args(
+    steps: Vec<String>,
+    guards: Vec<String>,
+    raw_args: &[OsString],
+) -> Result<Vec<ProcedureStep>> {
+    let procedure = match parse_learn_procedure_from_raw_args(raw_args)? {
+        Some(procedure) => procedure,
+        None => procedure_from_ordinal_args(steps, guards)?,
+    };
+    artesian_mcp::normalize_skill_procedure(procedure)
+}
+
+fn parse_learn_procedure_from_raw_args(
+    raw_args: &[OsString],
+) -> Result<Option<Vec<ProcedureStep>>> {
+    let Some(start) = raw_args
+        .windows(2)
+        .position(|pair| pair[0].to_str() == Some("memory") && pair[1].to_str() == Some("learn"))
+    else {
+        return Ok(None);
+    };
+
+    let mut procedure = Vec::<ProcedureStep>::new();
+    let mut current_step: Option<usize> = None;
+    let mut index = start + 2;
+    while index < raw_args.len() {
+        let arg = os_arg_to_string(&raw_args[index], "argument")?;
+        if arg == "--step" {
+            let run = raw_value_after(raw_args, index, "--step")?;
+            procedure.push(ProcedureStep::new(run, None));
+            current_step = Some(procedure.len() - 1);
+            index += 2;
+            continue;
+        }
+        if let Some(run) = arg.strip_prefix("--step=") {
+            procedure.push(ProcedureStep::new(run.to_string(), None));
+            current_step = Some(procedure.len() - 1);
+            index += 1;
+            continue;
+        }
+        if arg == "--guard" {
+            let guard = raw_value_after(raw_args, index, "--guard")?;
+            let Some(step_index) = current_step else {
+                bail!("--guard must follow a preceding --step");
+            };
+            attach_guard(&mut procedure, step_index, guard)?;
+            index += 2;
+            continue;
+        }
+        if let Some(guard) = arg.strip_prefix("--guard=") {
+            let Some(step_index) = current_step else {
+                bail!("--guard must follow a preceding --step");
+            };
+            attach_guard(&mut procedure, step_index, guard.to_string())?;
+            index += 1;
+            continue;
+        }
+        index += 1;
+    }
+
+    if procedure.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(procedure))
+    }
+}
+
+fn procedure_from_ordinal_args(
+    steps: Vec<String>,
+    guards: Vec<String>,
+) -> Result<Vec<ProcedureStep>> {
+    if guards.len() > steps.len() {
+        bail!("--guard requires a preceding --step");
+    }
+    Ok(steps
+        .into_iter()
+        .enumerate()
+        .map(|(index, run)| ProcedureStep::new(run, guards.get(index).cloned()))
+        .collect())
+}
+
+fn attach_guard(procedure: &mut [ProcedureStep], step_index: usize, guard: String) -> Result<()> {
+    let step = procedure
+        .get_mut(step_index)
+        .with_context(|| format!("missing procedure step {}", step_index + 1))?;
+    if step.guard.is_some() {
+        bail!("procedure step {} already has a guard", step_index + 1);
+    }
+    step.guard = Some(guard);
+    Ok(())
+}
+
+fn raw_value_after(raw_args: &[OsString], index: usize, option: &str) -> Result<String> {
+    let value = raw_args
+        .get(index + 1)
+        .with_context(|| format!("{option} requires a value"))?;
+    os_arg_to_string(value, option)
+}
+
+fn os_arg_to_string(value: &OsString, label: &str) -> Result<String> {
+    value
+        .to_str()
+        .map(str::to_string)
+        .with_context(|| format!("{label} is not valid UTF-8"))
 }
 
 /// Bundled arguments for the `memory evict` sub-command (avoids a 9-arg function).

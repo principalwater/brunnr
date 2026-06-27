@@ -8,6 +8,8 @@ use thiserror::Error;
 
 use crate::Relation;
 
+pub const SKILL_PROCEDURE_METADATA_KEY: &str = "procedure";
+
 // ── OCF-aligned record state ──────────────────────────────────────────────────
 
 /// Lifecycle state of a [`MemoryRecord`].
@@ -241,6 +243,46 @@ impl StoreMemory {
         }
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcedureStep {
+    pub run: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guard: Option<String>,
+}
+
+impl ProcedureStep {
+    pub fn new(run: impl Into<String>, guard: Option<String>) -> Self {
+        Self {
+            run: run.into(),
+            guard,
+        }
+    }
+}
+
+pub fn insert_skill_procedure_metadata(
+    metadata: &mut BTreeMap<String, String>,
+    procedure: &[ProcedureStep],
+) -> MemoryResult<()> {
+    if procedure.is_empty() {
+        metadata.remove(SKILL_PROCEDURE_METADATA_KEY);
+        return Ok(());
+    }
+    metadata.insert(
+        SKILL_PROCEDURE_METADATA_KEY.to_string(),
+        serde_json::to_string(procedure)?,
+    );
+    Ok(())
+}
+
+pub fn skill_procedure_from_metadata(
+    metadata: &BTreeMap<String, String>,
+) -> MemoryResult<Option<Vec<ProcedureStep>>> {
+    metadata
+        .get(SKILL_PROCEDURE_METADATA_KEY)
+        .map(|raw| serde_json::from_str(raw).map_err(MemoryError::from))
+        .transpose()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

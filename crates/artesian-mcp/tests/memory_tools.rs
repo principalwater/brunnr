@@ -14,10 +14,10 @@ use artesian_core::{AgentBinding, AgentCatalog, AgentCatalogEntry, AgentModel, M
 use artesian_mcp::{
     AnchorSetRequest, AnswerRequest, BindRequest, CommitRequest, DelegateRequest, FindRequest,
     LearnRequest, LoopRequest, MemoryServer, RelationRequest, SessionCheckpointRequest,
-    SessionResumeByTaskRequest, SessionResumeRequest, SkillsRequest, StoreRequest,
-    TeamCreateRequest, TeamMessageKindRequest, TeamMessageRequest, TeamSpawnRequest,
-    TeamStatusRequest, TeamTaskAddRequest, TeamTaskClaimRequest, TeamTaskCompleteRequest,
-    ToolsFindRequest,
+    SessionResumeByTaskRequest, SessionResumeRequest, SkillProcedureStep, SkillReplayRequest,
+    SkillsRequest, StoreRequest, TeamCreateRequest, TeamMessageKindRequest, TeamMessageRequest,
+    TeamSpawnRequest, TeamStatusRequest, TeamTaskAddRequest, TeamTaskClaimRequest,
+    TeamTaskCompleteRequest, ToolsFindRequest,
 };
 use artesian_test_support::TempDir;
 use rmcp::handler::server::wrapper::Parameters;
@@ -1433,6 +1433,7 @@ async fn memory_learn_and_skills_list() {
             content: "Use alpha pattern for optimal throughput".to_string(),
             sources: Some(vec!["docs/alpha.md".to_string()]),
             tags: Some(vec!["performance".to_string()]),
+            procedure: None,
         }))
         .await
         .expect("learn AlphaSkill should succeed")
@@ -1451,6 +1452,7 @@ async fn memory_learn_and_skills_list() {
             content: "Use alpha pattern for optimal throughput".to_string(),
             sources: Some(vec!["docs/alpha.md".to_string()]),
             tags: Some(vec!["performance".to_string()]),
+            procedure: None,
         }))
         .await
         .expect("re-learn should succeed")
@@ -1468,6 +1470,7 @@ async fn memory_learn_and_skills_list() {
             content: "Use beta pattern for low latency".to_string(),
             sources: None,
             tags: None,
+            procedure: None,
         }))
         .await
         .expect("learn BetaSkill should succeed")
@@ -1640,4 +1643,78 @@ async fn memory_learn_and_skills_list() {
     for skill in &skills_by_usage.skills {
         let _ = skill.access_count; // field must be present (u32, always serialized)
     }
+}
+
+#[tokio::test]
+async fn memory_skill_replay_dry_run_and_execute() {
+    let tempdir = TempDir::new("mcp-skill-replay");
+    let mut config = artesian_core::ArtesianConfig::memory_files(
+        tempdir.path().display().to_string(),
+        Vec::new(),
+    )
+    .memory;
+    config.track_savings = false;
+    let server = MemoryServer::from_config(&config).expect("server should open");
+
+    server
+        .memory_learn(Parameters(LearnRequest {
+            title: "ReplaySkill".to_string(),
+            content: "Replay this guarded procedure".to_string(),
+            sources: None,
+            tags: None,
+            procedure: Some(vec![SkillProcedureStep {
+                run: "echo mcp-replayed".to_string(),
+                guard: Some("true".to_string()),
+            }]),
+        }))
+        .await
+        .expect("learn should succeed");
+
+    let skills = server
+        .memory_skills(Parameters(SkillsRequest {
+            limit: Some(10),
+            by_usage: Some(false),
+        }))
+        .await
+        .expect("skills should succeed")
+        .0;
+    let replay_skill = skills
+        .skills
+        .iter()
+        .find(|skill| skill.title.as_deref() == Some("ReplaySkill"))
+        .expect("ReplaySkill should be listed");
+    assert_eq!(
+        replay_skill.procedure.as_ref().map(Vec::len),
+        Some(1),
+        "procedure should be visible in memory.skills"
+    );
+
+    let dry_run = server
+        .memory_skill_replay(Parameters(SkillReplayRequest {
+            title: "ReplaySkill".to_string(),
+            execute: None,
+        }))
+        .await
+        .expect("dry-run replay should succeed")
+        .0;
+    assert_eq!(dry_run.status, "dry-run");
+    assert_eq!(dry_run.steps[0].guard_status, "not-run");
+    assert_eq!(dry_run.steps[0].run_status, "not-run");
+
+    let executed = server
+        .memory_skill_replay(Parameters(SkillReplayRequest {
+            title: "ReplaySkill".to_string(),
+            execute: Some(true),
+        }))
+        .await
+        .expect("execute replay should succeed")
+        .0;
+    assert_eq!(executed.status, "success");
+    assert!(!executed.fallback);
+    assert_eq!(executed.steps[0].guard_status, "passed");
+    assert_eq!(executed.steps[0].run_status, "passed");
+    assert_eq!(
+        executed.steps[0].run_output.as_deref(),
+        Some("mcp-replayed")
+    );
 }
