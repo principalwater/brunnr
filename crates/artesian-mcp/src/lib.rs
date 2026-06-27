@@ -43,13 +43,14 @@ use rmcp::{
         router::tool::ToolRouter,
         wrapper::{Json, Parameters},
     },
-    model::{ServerCapabilities, ServerInfo},
+    model::{Meta, ProgressNotificationParam, ProgressToken, ServerCapabilities, ServerInfo},
     schemars, tool, tool_handler, tool_router,
     transport::stdio,
-    ErrorData, ServerHandler, ServiceExt,
+    ErrorData, Peer, RoleServer, ServerHandler, ServiceExt,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex as AsyncMutex;
+use tokio_util::sync::CancellationToken;
 
 #[cfg(feature = "qdrant")]
 use aquifer::{QdrantVectorStore, QdrantVectorStoreConfig};
@@ -100,6 +101,63 @@ pub struct MemoryServer {
     collection: String,
     /// Mirror of `config.memory.track_savings`.
     track_savings: bool,
+}
+
+// ── Progress / cancellation helpers ───────────────────────────────────────────────────────────
+
+/// Build a [`loop_core::LoopProgressCallback`] that forwards each event to the MCP client via
+/// `peer.notify_progress`.  Returns `None` when `progress_token` is absent (the client did not
+/// request progress notifications), so the loop runs without any overhead in that case.
+fn make_mcp_progress_callback(
+    peer: Peer<RoleServer>,
+    progress_token: Option<ProgressToken>,
+) -> Option<loop_core::LoopProgressCallback> {
+    let token = progress_token?;
+    Some(Arc::new(
+        move |progress: f64, total: Option<f64>, message: Option<String>| {
+            let peer = peer.clone();
+            let token = token.clone();
+            tokio::spawn(async move {
+                let _ = peer
+                    .notify_progress(ProgressNotificationParam {
+                        progress_token: token,
+                        progress,
+                        total,
+                        message,
+                    })
+                    .await;
+            });
+        },
+    ))
+}
+
+/// Spawn a background task that sends a `notifications/progress` heartbeat every `interval`
+/// while a long-running MCP tool call is in progress.  The returned `JoinHandle` **must** be
+/// `.abort()`ed when the operation completes (success, error, or cancel) so the task stops.
+///
+/// When `progress_token` is `None` the spawned task exits immediately (no-op path).
+fn spawn_progress_heartbeat(
+    peer: Peer<RoleServer>,
+    progress_token: Option<ProgressToken>,
+    interval: Duration,
+    label: &'static str,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let Some(token) = progress_token else { return };
+        let mut tick: u64 = 0;
+        loop {
+            tokio::time::sleep(interval).await;
+            tick += 1;
+            let _ = peer
+                .notify_progress(ProgressNotificationParam {
+                    progress_token: token.clone(),
+                    progress: tick as f64,
+                    total: None,
+                    message: Some(format!("{label} ({}s elapsed)", tick * interval.as_secs())),
+                })
+                .await;
+        }
+    })
 }
 
 impl MemoryServer {
@@ -2191,7 +2249,28 @@ Call when the project vision or current phase changes."
     )]
     pub async fn orchestrate_delegate(
         &self,
+        peer: Peer<RoleServer>,
+        meta: Meta,
+        ct: CancellationToken,
         Parameters(request): Parameters<DelegateRequest>,
+    ) -> Result<Json<DelegateResponse>, ErrorData> {
+        let progress_token = meta.get_progress_token();
+        let heartbeat = spawn_progress_heartbeat(
+            peer,
+            progress_token,
+            Duration::from_secs(5),
+            "orchestrate.delegate running",
+        );
+        let result = self.orchestrate_delegate_inner(request, ct).await;
+        heartbeat.abort();
+        result
+    }
+
+    /// Core implementation of `orchestrate.delegate`, callable without MCP context for tests.
+    pub async fn orchestrate_delegate_inner(
+        &self,
+        request: DelegateRequest,
+        ct: CancellationToken,
     ) -> Result<Json<DelegateResponse>, ErrorData> {
         self.ensure_orchestration_enabled()?;
         let role = Role::from_str(&request.role)
@@ -2233,8 +2312,10 @@ Call when the project vision or current phase changes."
             })
             .await
             .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-        let response = process
-            .send(
+        // Drive the agent call inside a select so a client cancel returns promptly.
+        // Dropping `session` when the cancel branch fires triggers process-group cleanup.
+        let response = tokio::select! {
+            result = process.send(
                 &session,
                 AgentMessage {
                     content: format!(
@@ -2243,8 +2324,21 @@ Call when the project vision or current phase changes."
                         request.task
                     ),
                 },
-            )
-            .await;
+            ) => result,
+            () = ct.cancelled() => {
+                let _ = task_store
+                    .transition(TransitionTask {
+                        id: task_id.clone(),
+                        status: TaskStatus::Blocked,
+                    })
+                    .await;
+                self.record_delegate(task_id, "cancelled".to_string(), None)?;
+                return Err(ErrorData::invalid_request(
+                    "request cancelled by client".to_string(),
+                    None,
+                ));
+            }
+        };
         match response {
             Ok(response) => {
                 task_store
@@ -2366,7 +2460,32 @@ verified skill + spec + auto-invariants to memory. Brakes: max_turns (default 10
     )]
     pub async fn orchestrate_loop(
         &self,
+        peer: Peer<RoleServer>,
+        meta: Meta,
+        ct: CancellationToken,
         Parameters(request): Parameters<LoopRequest>,
+    ) -> Result<Json<LoopResponse>, ErrorData> {
+        let progress_token = meta.get_progress_token();
+        let on_progress = make_mcp_progress_callback(peer.clone(), progress_token.clone());
+        // Heartbeat so the client sees a signal even when a single worker turn is long.
+        let heartbeat = spawn_progress_heartbeat(
+            peer,
+            progress_token,
+            Duration::from_secs(5),
+            "orchestrate.loop running",
+        );
+        let result = self.orchestrate_loop_inner(request, ct, on_progress).await;
+        heartbeat.abort();
+        result
+    }
+
+    /// Core implementation of `orchestrate.loop`, exposed without MCP context so tests can
+    /// call it directly without needing a `Peer<RoleServer>`.
+    pub async fn orchestrate_loop_inner(
+        &self,
+        request: LoopRequest,
+        cancel: CancellationToken,
+        on_progress: Option<loop_core::LoopProgressCallback>,
     ) -> Result<Json<LoopResponse>, ErrorData> {
         self.ensure_orchestration_enabled()?;
         let run_id = loop_core::loop_run_id();
@@ -2392,6 +2511,8 @@ verified skill + spec + auto-invariants to memory. Brakes: max_turns (default 10
             max_remediation_attempts: request
                 .max_remediation_attempts
                 .unwrap_or(loop_core::LOOP_REMEDIATION_ATTEMPTS_DEFAULT),
+            cancel,
+            on_progress,
         };
         let mut commands = McpShellLoopCommands;
         let report =
@@ -2551,24 +2672,67 @@ verified skill + spec + auto-invariants to memory. Brakes: max_turns (default 10
     )]
     pub async fn team_message(
         &self,
+        peer: Peer<RoleServer>,
+        meta: Meta,
+        ct: CancellationToken,
         Parameters(request): Parameters<TeamMessageRequest>,
     ) -> Result<Json<TeamMessageResponse>, ErrorData> {
+        // Only wire heartbeat and cancel for the blocking execute=true variant.
+        let execute = request.execute.unwrap_or(false);
+        let progress_token = if execute {
+            meta.get_progress_token()
+        } else {
+            None
+        };
+        let heartbeat = spawn_progress_heartbeat(
+            peer,
+            progress_token,
+            Duration::from_secs(5),
+            "team.message executing",
+        );
+        let cancel = if execute {
+            ct
+        } else {
+            CancellationToken::new()
+        };
+        let result = self.team_message_inner(request, cancel).await;
+        heartbeat.abort();
+        result
+    }
+
+    /// Core implementation of `team.message`, callable without MCP context for tests.
+    pub async fn team_message_inner(
+        &self,
+        request: TeamMessageRequest,
+        ct: CancellationToken,
+    ) -> Result<Json<TeamMessageResponse>, ErrorData> {
         self.ensure_orchestration_enabled()?;
-        let mut runtime = self.team_runtime.lock().await;
-        let outcome = runtime
-            .message(TeamMessage {
-                team_id: request.team_id,
-                from: request.from,
-                to: request.to,
-                kind: request.kind.into(),
-                content: request.content,
-                task_id: request.task_id,
-                approved: request.approved,
-                execute: request.execute.unwrap_or(false),
-                resume_packet: request.resume_packet,
-            })
-            .await
-            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        // Wrap in select! so a client cancel releases the runtime mutex promptly.
+        let outcome = tokio::select! {
+            result = async {
+                let mut runtime = self.team_runtime.lock().await;
+                runtime
+                    .message(TeamMessage {
+                        team_id: request.team_id,
+                        from: request.from,
+                        to: request.to,
+                        kind: request.kind.into(),
+                        content: request.content,
+                        task_id: request.task_id,
+                        approved: request.approved,
+                        execute: request.execute.unwrap_or(false),
+                        resume_packet: request.resume_packet,
+                    })
+                    .await
+                    .map_err(|error| ErrorData::internal_error(error.to_string(), None))
+            } => result?,
+            () = ct.cancelled() => {
+                return Err(ErrorData::invalid_request(
+                    "request cancelled by client".to_string(),
+                    None,
+                ));
+            }
+        };
         Ok(Json(TeamMessageResponse {
             event: serde_json::to_value(outcome.event)
                 .map_err(|error| ErrorData::internal_error(error.to_string(), None))?,

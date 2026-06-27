@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 
 use crate::metrics::count_tokens;
+use crate::savings::{record_savings, record_savings_to_dir};
 use crate::{
     CcsSchema, CommittedContextState, CommittedEntry, Compressor, DefaultQualifyGate,
     ExtractiveCompressor, GaugeMetrics, HeadgateResult, NoopCompressor, QualifyGate, RecallStore,
@@ -62,6 +63,14 @@ pub struct Headgate {
     compressor: Arc<dyn Compressor>,
     ccs: CommittedContextState,
     config: HeadgateConfig,
+    /// Collection label for `qualify.reject` savings recording.  Empty string = opt-out.
+    savings_collection: String,
+    /// Whether to record `qualify.reject` savings entries.  Mirrors `config.memory.track_savings`.
+    track_savings: bool,
+    /// Optional override for the statistics directory.  `None` → resolved from `ARTESIAN_STATS_DIR`
+    /// env var (the normal production path).  Set via [`Headgate::with_savings_dir`] in tests to
+    /// avoid env-var races between parallel test threads.
+    savings_dir: Option<PathBuf>,
 }
 
 impl Headgate {
@@ -84,6 +93,9 @@ impl Headgate {
             compressor,
             ccs,
             config,
+            savings_collection: String::new(),
+            track_savings: false,
+            savings_dir: None,
         }
     }
 
@@ -102,6 +114,31 @@ impl Headgate {
     /// Replace the compressor (e.g. an LLM-backed summarizer).
     pub fn with_compressor(mut self, compressor: Arc<dyn Compressor>) -> Self {
         self.compressor = compressor;
+        self
+    }
+
+    /// Enable `qualify.reject` savings recording.
+    ///
+    /// When set, every rejected candidate contributes a `qualify.reject` entry to the
+    /// token-savings log (`returned=0`, `baseline=rejected unit tokens`), so
+    /// `artesian tokens` accounts for tokens the qualify-gate prevents from entering
+    /// future context.  Best-effort: I/O errors inside [`record_savings`] are silently
+    /// swallowed and never propagate to the caller.
+    pub fn with_savings(mut self, collection: impl Into<String>, track: bool) -> Self {
+        self.savings_collection = collection.into();
+        self.track_savings = track;
+        self
+    }
+
+    /// Override the statistics directory used for `qualify.reject` savings.
+    ///
+    /// In production this is not needed — the directory is resolved from the
+    /// `ARTESIAN_STATS_DIR` environment variable.  Use this in tests to pass a
+    /// controlled temp directory instead of mutating the process-wide env var, which
+    /// is not safe in multi-threaded test runners.
+    #[doc(hidden)]
+    pub fn with_savings_dir(mut self, dir: PathBuf) -> Self {
+        self.savings_dir = Some(dir);
         self
     }
 
@@ -137,6 +174,27 @@ impl Headgate {
                     metrics.rejected_redundant += 1;
                 } else {
                     metrics.rejected_relevance += 1;
+                }
+                // Record qualify.reject savings: tokens in a rejected unit never load into
+                // future context.  Best-effort — stats I/O errors are silently swallowed.
+                if self.track_savings && !self.savings_collection.is_empty() {
+                    let rejected_tokens = count_tokens(&item.content);
+                    match &self.savings_dir {
+                        Some(dir) => record_savings_to_dir(
+                            dir,
+                            "qualify.reject",
+                            &self.savings_collection,
+                            0,
+                            rejected_tokens,
+                        ),
+                        None => record_savings(
+                            "qualify.reject",
+                            &self.savings_collection,
+                            0,
+                            rejected_tokens,
+                            true,
+                        ),
+                    }
                 }
                 continue;
             }

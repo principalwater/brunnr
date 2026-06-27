@@ -1,8 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use chrono::Utc;
+use std::collections::HashMap;
 
-use crate::{entity::EntityIndex, SearchHit};
+use chrono::{DateTime, Utc};
+
+use crate::{
+    entity::{extract_entities, EntityIndex},
+    event::Event,
+    MemoryRecord, SearchHit,
+};
 
 /// Apply exponential recency decay to retrieval scores.
 ///
@@ -76,6 +82,85 @@ pub fn apply_knowledge_supersession(
             .then_with(|| a.record.node_id.cmp(&b.record.node_id))
     });
     hits
+}
+
+/// Return the temporal profile of an entity: all records that mention it, ordered by
+/// `created_at` ascending (oldest first).
+///
+/// A record "mentions" the entity when the entity string (case-insensitive) appears in the
+/// record's tags or in the set of entities extracted from its content by [`extract_entities`].
+///
+/// The input slice may contain records from any backend; those without temporal data or without
+/// matching entities are silently skipped (backward-compatible).
+pub fn entity_timeline(records: &[MemoryRecord], entity: &str) -> Vec<MemoryRecord> {
+    let entity_lower = entity.trim().to_lowercase();
+    if entity_lower.is_empty() {
+        return Vec::new();
+    }
+
+    let mut matching: Vec<MemoryRecord> = records
+        .iter()
+        .filter(|record| {
+            // Fast path: tags (already stored, no extraction cost)
+            if record.tags.iter().any(|t| t.to_lowercase() == entity_lower) {
+                return true;
+            }
+            // Slow path: deterministic entity extraction from content
+            extract_entities(&record.content)
+                .iter()
+                .any(|e| e.to_lowercase() == entity_lower)
+        })
+        .cloned()
+        .collect();
+
+    matching.sort_by_key(|r| r.created_at);
+    matching
+}
+
+/// Re-order retrieval hits by event membership time.
+///
+/// Hits that belong to a known [`Event`] are placed in event-start-time order (oldest event
+/// first), stable within each event group (original relative order preserved). Hits not covered
+/// by any event are appended after the event-ordered block, retaining their original relative
+/// order.
+///
+/// When `events` is empty this is a no-op (returns `hits` unchanged), so the default relevance
+/// order of a normal `find` call is unaffected.
+pub fn sort_hits_by_event_time(hits: Vec<SearchHit>, events: &[Event]) -> Vec<SearchHit> {
+    if events.is_empty() {
+        return hits;
+    }
+
+    // Build node_id → event start time (earliest created_at in event)
+    let node_to_start: HashMap<&str, DateTime<Utc>> = events
+        .iter()
+        .flat_map(|event| {
+            event
+                .member_node_ids
+                .iter()
+                .map(move |nid| (nid.as_str(), event.time_range.0))
+        })
+        .collect();
+
+    // Partition: event-covered hits carry their event start; others go to the tail
+    let mut event_hits: Vec<(DateTime<Utc>, usize, SearchHit)> = Vec::new();
+    let mut other_hits: Vec<(usize, SearchHit)> = Vec::new();
+
+    for (index, hit) in hits.into_iter().enumerate() {
+        match node_to_start.get(hit.record.node_id.as_str()) {
+            Some(&start) => event_hits.push((start, index, hit)),
+            None => other_hits.push((index, hit)),
+        }
+    }
+
+    // Sort event-covered hits by event start time; stable original-index tiebreak
+    event_hits.sort_by(|(start_a, idx_a, _), (start_b, idx_b, _)| {
+        start_a.cmp(start_b).then(idx_a.cmp(idx_b))
+    });
+
+    let mut result: Vec<SearchHit> = event_hits.into_iter().map(|(_, _, hit)| hit).collect();
+    result.extend(other_hits.into_iter().map(|(_, hit)| hit));
+    result
 }
 
 #[cfg(test)]
@@ -175,6 +260,198 @@ mod tests {
         assert!(
             new_score > old_score,
             "newer record should outscore older after supersession: new={new_score} old={old_score}"
+        );
+    }
+
+    // ── entity_timeline tests ─────────────────────────────────────────────────
+
+    fn record_with_tag(node_id: &str, tag: &str, days_old: i64) -> MemoryRecord {
+        MemoryRecord {
+            id: MemoryId::new(format!("id:{node_id}")),
+            node_id: node_id.to_string(),
+            content: format!("content for {node_id}"),
+            tags: vec![tag.to_string()],
+            metadata: BTreeMap::new(),
+            tier: MemoryTier::L1Atom,
+            created_at: Utc::now() - Duration::days(days_old),
+            scope: None,
+            agent_id: None,
+            session_id: None,
+            task_id: None,
+            user_id: None,
+            source: None,
+            confidence: None,
+            relations: Vec::new(),
+            last_access: None,
+            access_count: 0,
+            state: crate::MemoryState::Active,
+        }
+    }
+
+    #[test]
+    fn entity_timeline_returns_records_ordered_by_time() {
+        let records = vec![
+            record_with_tag("node:newest", "RateLimit", 1),
+            record_with_tag("node:oldest", "RateLimit", 30),
+            record_with_tag("node:middle", "RateLimit", 15),
+            record_with_tag("node:unrelated", "DatabaseMigration", 5),
+        ];
+        let timeline = entity_timeline(&records, "RateLimit");
+        assert_eq!(
+            timeline.len(),
+            3,
+            "only RateLimit records should be returned"
+        );
+        // Verify chronological order (oldest first)
+        assert_eq!(timeline[0].node_id, "node:oldest");
+        assert_eq!(timeline[1].node_id, "node:middle");
+        assert_eq!(timeline[2].node_id, "node:newest");
+    }
+
+    #[test]
+    fn entity_timeline_case_insensitive_tag_matching() {
+        let records = vec![
+            record_with_tag("node:a", "RateLimit", 10),
+            record_with_tag("node:b", "ratelimit", 5), // different case
+        ];
+        let timeline = entity_timeline(&records, "RATELIMIT");
+        assert_eq!(
+            timeline.len(),
+            2,
+            "case-insensitive matching should find both"
+        );
+    }
+
+    #[test]
+    fn entity_timeline_empty_entity_returns_empty() {
+        let records = vec![record_with_tag("node:a", "RateLimit", 1)];
+        assert!(entity_timeline(&records, "").is_empty());
+        assert!(entity_timeline(&records, "   ").is_empty());
+    }
+
+    #[test]
+    fn entity_timeline_no_match_returns_empty() {
+        let records = vec![record_with_tag("node:a", "SomeOtherThing", 1)];
+        assert!(entity_timeline(&records, "RateLimit").is_empty());
+    }
+
+    #[test]
+    fn entity_timeline_empty_records_returns_empty() {
+        assert!(entity_timeline(&[], "RateLimit").is_empty());
+    }
+
+    #[test]
+    fn entity_timeline_matches_content_entity() {
+        // A record with a CamelCase entity in content (no tag)
+        let record = MemoryRecord {
+            id: MemoryId::new("id:content-match"),
+            node_id: "node:content-match".to_string(),
+            content: "BackgroundJobRetryPolicy exceeded max retries.".to_string(),
+            tags: Vec::new(),
+            metadata: BTreeMap::new(),
+            tier: MemoryTier::L1Atom,
+            created_at: Utc::now() - Duration::days(5),
+            scope: None,
+            agent_id: None,
+            session_id: None,
+            task_id: None,
+            user_id: None,
+            source: None,
+            confidence: None,
+            relations: Vec::new(),
+            last_access: None,
+            access_count: 0,
+            state: crate::MemoryState::Active,
+        };
+        let timeline = entity_timeline(&[record], "BackgroundJobRetryPolicy");
+        assert_eq!(
+            timeline.len(),
+            1,
+            "entity extracted from content should match"
+        );
+    }
+
+    // ── sort_hits_by_event_time tests ─────────────────────────────────────────
+
+    #[test]
+    fn sort_hits_by_event_time_orders_by_event_start() {
+        use crate::event::Event;
+
+        // Two hits from different events; the older event should come first
+        let old_hit = hit("node:old-event", 0.9, 30); // 30 days old
+        let new_hit = hit("node:new-event", 1.0, 5); // 5 days old (higher score)
+
+        let events = vec![
+            Event {
+                id: "ev-old".to_string(),
+                title: "OldEvent".to_string(),
+                time_range: (
+                    Utc::now() - chrono::Duration::days(30),
+                    Utc::now() - chrono::Duration::days(29),
+                ),
+                entities: vec!["OldEvent".to_string()],
+                member_node_ids: vec!["node:old-event".to_string()],
+            },
+            Event {
+                id: "ev-new".to_string(),
+                title: "NewEvent".to_string(),
+                time_range: (
+                    Utc::now() - chrono::Duration::days(5),
+                    Utc::now() - chrono::Duration::days(4),
+                ),
+                entities: vec!["NewEvent".to_string()],
+                member_node_ids: vec!["node:new-event".to_string()],
+            },
+        ];
+
+        // Input: new_hit first (higher relevance score), old_hit second
+        let hits = vec![new_hit, old_hit];
+        let sorted = sort_hits_by_event_time(hits, &events);
+
+        assert_eq!(
+            sorted[0].record.node_id, "node:old-event",
+            "oldest event should come first after temporal sort"
+        );
+        assert_eq!(sorted[1].record.node_id, "node:new-event");
+    }
+
+    #[test]
+    fn sort_hits_by_event_time_empty_events_is_noop() {
+        let hits = vec![hit("node:a", 1.0, 5), hit("node:b", 0.5, 1)];
+        let original_order: Vec<String> = hits.iter().map(|h| h.record.node_id.clone()).collect();
+        let sorted = sort_hits_by_event_time(hits, &[]);
+        let sorted_order: Vec<String> = sorted.iter().map(|h| h.record.node_id.clone()).collect();
+        assert_eq!(original_order, sorted_order, "empty events → no-op");
+    }
+
+    #[test]
+    fn sort_hits_by_event_time_uncovered_hits_appended_after() {
+        use crate::event::Event;
+
+        let event_hit = hit("node:in-event", 0.5, 20);
+        let orphan_hit = hit("node:orphan", 1.0, 1); // higher score, no event
+
+        let events = vec![Event {
+            id: "ev1".to_string(),
+            title: "SomeEvent".to_string(),
+            time_range: (
+                Utc::now() - chrono::Duration::days(20),
+                Utc::now() - chrono::Duration::days(19),
+            ),
+            entities: vec!["SomeEvent".to_string()],
+            member_node_ids: vec!["node:in-event".to_string()],
+        }];
+
+        let hits = vec![orphan_hit, event_hit];
+        let sorted = sort_hits_by_event_time(hits, &events);
+
+        assert_eq!(
+            sorted[0].record.node_id, "node:in-event",
+            "event-covered hit should precede uncovered hits"
+        );
+        assert_eq!(
+            sorted[1].record.node_id, "node:orphan",
+            "uncovered hit should be appended last"
         );
     }
 }

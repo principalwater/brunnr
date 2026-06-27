@@ -10,6 +10,7 @@ mod compat;
 pub mod decay;
 pub mod entity;
 pub mod episode;
+pub mod event;
 pub mod eviction;
 mod files;
 pub mod graph;
@@ -47,6 +48,7 @@ pub use compat::{CollectionCompat, COMPAT_POINT_ID, OKF_VERSION};
 pub use decay::{retrieval_strength, DecayConfig};
 pub use entity::{extract_entities, EntityIndex};
 pub use episode::EpisodeIndex;
+pub use event::{assemble_events, Event};
 pub use eviction::{
     append_eviction_log, evict, EvictionAction, EvictionLogEntry, EvictionPolicy, EvictionReport,
 };
@@ -82,7 +84,9 @@ pub use session::{
 };
 #[cfg(feature = "sqlite-vec")]
 pub use sqlite_vec::{SqliteVecBackend, SqliteVecVectorStore, SqliteVecVectorStoreConfig};
-pub use temporal::{apply_knowledge_supersession, apply_recency_decay};
+pub use temporal::{
+    apply_knowledge_supersession, apply_recency_decay, entity_timeline, sort_hits_by_event_time,
+};
 pub use txn::{sync_okf_directory, CommitLog, SyncReport, TransactionalMemory, TxnError, TxnSeq};
 pub use types::{
     MemoryError, MemoryId, MemoryQuery, MemoryRecord, MemoryResult, MemoryScope, MemoryState,

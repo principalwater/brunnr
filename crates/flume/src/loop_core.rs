@@ -19,8 +19,11 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     pin::Pin,
+    sync::Arc,
     time::{Duration, Instant},
 };
+
+use tokio_util::sync::CancellationToken;
 
 use aquifer::{
     AnchorAnchorStore, MemoryBackend, MemoryQuery, MemoryScope, MemoryTier, SessionAnchor,
@@ -100,6 +103,13 @@ pub trait LoopCommands: Send {
 
 // ── Run options and report ─────────────────────────────────────────────────────────────────────
 
+/// Type alias for the per-turn progress callback stored in [`LoopRunOptions::on_progress`].
+///
+/// Called with `(progress, total, message)` where `progress` is the current turn number
+/// (1-based), `total` is `max_turns as f64`, and `message` is a human-readable stage label.
+/// Implement using `tokio::spawn` if you need to drive async work (e.g. MCP notifications).
+pub type LoopProgressCallback = Arc<dyn Fn(f64, Option<f64>, Option<String>) + Send + Sync>;
+
 /// Runtime parameters for `run_loop_core`.
 pub struct LoopRunOptions {
     /// Verifier command — exit 0 means the goal holds.
@@ -132,6 +142,17 @@ pub struct LoopRunOptions {
     /// Defaults to [`LOOP_REMEDIATION_ATTEMPTS_DEFAULT`]. Set to `0` to disable escalation
     /// (the loop then runs to max-turns if the goal never holds).
     pub max_remediation_attempts: u32,
+    /// Cancellation token — checked at the start of every turn and inside the `tokio::select!`
+    /// that drives the worker and verifier.  When fired the loop returns promptly with outcome
+    /// `"cancelled"`.  Use [`CancellationToken::new()`] (never-cancelled default) when
+    /// cancellation is not needed; existing call-sites are unaffected.
+    pub cancel: CancellationToken,
+    /// Optional per-turn progress callback.  When `Some`, called three times per turn:
+    /// at turn-start, after the worker completes (pre-verify), and after the verifier.
+    /// `progress` is the current 1-based turn number; `total` is `max_turns`.
+    /// Drive `peer.notify_progress` from inside a `tokio::spawn` in the closure.
+    /// Pass `None` to disable (default for CLI callers).
+    pub on_progress: Option<LoopProgressCallback>,
 }
 
 /// Summary returned after `run_loop_core` completes (successfully or via a brake).
@@ -695,6 +716,24 @@ pub async fn run_loop_core(
                 &reason,
             );
         }
+        // Check the cancellation token so a client interrupt is acted on at every turn boundary.
+        if options.cancel.is_cancelled() {
+            return finish_loop_early(
+                &mut log,
+                &options.run_id,
+                "cancelled",
+                turn.saturating_sub(1),
+                started_at,
+                "loop cancelled by client",
+            );
+        }
+        if let Some(cb) = options.on_progress.as_ref() {
+            cb(
+                turn as f64,
+                Some(options.max_turns as f64),
+                Some(format!("turn {turn}/{}: starting", options.max_turns)),
+            );
+        }
         let recall = match backend {
             Some(backend) => {
                 let (text, baseline_tokens, returned_tokens) =
@@ -731,16 +770,29 @@ pub async fn run_loop_core(
             if let Some(ref directive) = last_failure_reason {
                 env.push((ARTESIAN_LAST_FAILURE_ENV.to_string(), directive.clone()));
             }
-            match commands
-                .run_worker(
+            // Drive the worker inside a select so a cancellation token fires promptly even
+            // when the worker is a long-running subprocess.  `kill_on_drop(true)` on the
+            // underlying `tokio::process::Command` ensures the child is reaped when the
+            // future is dropped by the cancel branch.
+            let worker_result = tokio::select! {
+                result = commands.run_worker(
                     cmd,
                     env,
                     remaining_wall_budget(started_at, options.max_wall),
-                )
-                .await
-            {
-                Ok(true) => {}
-                Ok(false) => {}
+                ) => result,
+                () = options.cancel.cancelled() => {
+                    return finish_loop_early(
+                        &mut log,
+                        &options.run_id,
+                        "cancelled",
+                        turn.saturating_sub(1),
+                        started_at,
+                        "cancelled during worker execution",
+                    );
+                }
+            };
+            match worker_result {
+                Ok(true) | Ok(false) => {}
                 Err(error) => {
                     let reason = error.to_string();
                     let outcome = if reason.contains("wall-clock budget") {
@@ -759,6 +811,15 @@ pub async fn run_loop_core(
                 }
             }
         }
+        // Emit pre-verify progress so the client gets a continuous "still working" heartbeat
+        // even when individual worker turns take a long time.
+        if let Some(cb) = options.on_progress.as_ref() {
+            cb(
+                turn as f64,
+                Some(options.max_turns as f64),
+                Some(format!("turn {turn}/{}: verifying goal", options.max_turns)),
+            );
+        }
         let _ = anchor_store
             .set(SessionAnchor::new(
                 format!(
@@ -768,12 +829,22 @@ pub async fn run_loop_core(
                 format!("verify goal: {}", options.goal),
             ))
             .await;
-        let verify_result = commands
-            .verify_goal(
+        let verify_result = tokio::select! {
+            result = commands.verify_goal(
                 &options.goal,
                 remaining_wall_budget(started_at, options.max_wall),
-            )
-            .await;
+            ) => result,
+            () = options.cancel.cancelled() => {
+                return finish_loop_early(
+                    &mut log,
+                    &options.run_id,
+                    "cancelled",
+                    turn.saturating_sub(1),
+                    started_at,
+                    "cancelled during goal verification",
+                );
+            }
+        };
         let (goal_met, check_output) = match verify_result {
             Ok(result) => result,
             Err(error) => {
@@ -793,6 +864,14 @@ pub async fn run_loop_core(
                 );
             }
         };
+        if let Some(cb) = options.on_progress.as_ref() {
+            let msg = if goal_met {
+                format!("turn {turn}/{}: goal met", options.max_turns)
+            } else {
+                format!("turn {turn}/{}: not yet, retrying", options.max_turns)
+            };
+            cb(turn as f64, Some(options.max_turns as f64), Some(msg));
+        }
         log.write_turn(
             &options.run_id,
             turn,
@@ -1043,6 +1122,8 @@ mod tests {
                 collection: String::new(),
                 track_savings: false,
                 max_remediation_attempts: LOOP_REMEDIATION_ATTEMPTS_DEFAULT,
+                cancel: CancellationToken::new(),
+                on_progress: None,
             },
             Some(&backend),
             &anchor,
@@ -1079,6 +1160,8 @@ mod tests {
                 collection: String::new(),
                 track_savings: false,
                 max_remediation_attempts: LOOP_REMEDIATION_ATTEMPTS_DEFAULT,
+                cancel: CancellationToken::new(),
+                on_progress: None,
             },
             Some(&backend),
             &anchor,
@@ -1122,6 +1205,8 @@ mod tests {
                 collection: String::new(),
                 track_savings: false,
                 max_remediation_attempts: 0, // disabled so we reach max-turns
+                cancel: CancellationToken::new(),
+                on_progress: None,
             },
             Some(&backend),
             &anchor,
@@ -1159,6 +1244,8 @@ mod tests {
                 collection: String::new(),
                 track_savings: false,
                 max_remediation_attempts: LOOP_REMEDIATION_ATTEMPTS_DEFAULT,
+                cancel: CancellationToken::new(),
+                on_progress: None,
             },
             Some(&backend),
             &anchor,
@@ -1250,6 +1337,8 @@ mod tests {
                 collection: String::new(),
                 track_savings: false,
                 max_remediation_attempts: 3,
+                cancel: CancellationToken::new(),
+                on_progress: None,
             },
             Some(&backend),
             &anchor,
@@ -1322,6 +1411,8 @@ mod tests {
                 collection: String::new(),
                 track_savings: false,
                 max_remediation_attempts: 2,
+                cancel: CancellationToken::new(),
+                on_progress: None,
             },
             Some(&backend),
             &anchor,
@@ -1382,6 +1473,8 @@ mod tests {
                 collection: String::new(),
                 track_savings: false,
                 max_remediation_attempts: 2,
+                cancel: CancellationToken::new(),
+                on_progress: None,
             },
             Some(&backend),
             &anchor,
@@ -1442,6 +1535,8 @@ mod tests {
                 collection: String::new(),
                 track_savings: false,
                 max_remediation_attempts: 0, // escalation disabled
+                cancel: CancellationToken::new(),
+                on_progress: None,
             },
             Some(&backend),
             &anchor,
@@ -1453,5 +1548,189 @@ mod tests {
         assert_eq!(report.outcome, "max-turns");
         assert_eq!(report.turns, 4);
         assert!(report.failure_trail.is_empty());
+    }
+
+    // ── Cancellation and progress tests ───────────────────────────────────────────────────────
+
+    /// A pre-cancelled token must exit with outcome "cancelled" before the first turn runs.
+    #[tokio::test]
+    async fn loop_core_cancelled_before_first_turn() {
+        let tempdir = TempDir::new("loop-core-cancel-before");
+        let backend = FilesBackend::new(tempdir.path());
+        let anchor = AnchorAnchorStore::new(tempdir.path());
+        let mut commands = MockLoopCommands::new(999); // never passes
+
+        let cancel = CancellationToken::new();
+        cancel.cancel(); // fire before the call
+
+        let report = run_loop_core(
+            LoopRunOptions {
+                goal: "goal-cmd".to_string(),
+                worker_cmd: Some("worker-cmd".to_string()),
+                max_turns: 10,
+                max_wall: None,
+                poll: false,
+                learn: false,
+                run_id: "test-cancel-before".to_string(),
+                run_log_dir: tempdir.join("runs"),
+                stop_file: tempdir.join("STOP"),
+                collection: String::new(),
+                track_savings: false,
+                max_remediation_attempts: 0,
+                cancel,
+                on_progress: None,
+            },
+            Some(&backend),
+            &anchor,
+            &mut commands,
+        )
+        .await
+        .expect("run_loop_core should not error on a pre-cancelled token");
+
+        assert_eq!(
+            report.outcome, "cancelled",
+            "pre-cancelled token must yield outcome 'cancelled'"
+        );
+        assert_eq!(
+            report.turns, 0,
+            "no turns should run when already cancelled"
+        );
+    }
+
+    /// A cancellation token fired mid-run exits promptly from inside the worker select! branch.
+    #[tokio::test]
+    async fn loop_core_cancels_during_worker() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        // Worker that sleeps until it is dropped (kill_on_drop equivalent in tests).
+        struct SlowWorkerCommands {
+            worker_calls: Arc<AtomicU32>,
+        }
+        impl LoopCommands for SlowWorkerCommands {
+            fn run_worker<'a>(
+                &'a mut self,
+                _cmd: &'a str,
+                _env: Vec<(String, String)>,
+                _timeout: Option<Duration>,
+            ) -> LoopCommandFuture<'a, bool> {
+                self.worker_calls.fetch_add(1, Ordering::Relaxed);
+                Box::pin(async move {
+                    tokio::time::sleep(Duration::from_secs(60)).await;
+                    Ok(true)
+                })
+            }
+            fn verify_goal<'a>(
+                &'a mut self,
+                _cmd: &'a str,
+                _timeout: Option<Duration>,
+            ) -> LoopCommandFuture<'a, (bool, String)> {
+                Box::pin(async move { Ok((false, "not done".to_string())) })
+            }
+        }
+
+        let tempdir = TempDir::new("loop-core-cancel-during");
+        let backend = FilesBackend::new(tempdir.path());
+        let anchor = AnchorAnchorStore::new(tempdir.path());
+        let cancel = CancellationToken::new();
+        let cancel_clone = cancel.clone();
+        let worker_calls = Arc::new(AtomicU32::new(0));
+        let mut commands = SlowWorkerCommands {
+            worker_calls: Arc::clone(&worker_calls),
+        };
+
+        // Fire cancellation after 50 ms — well before the 60-second worker would finish.
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            cancel_clone.cancel();
+        });
+
+        let started = std::time::Instant::now();
+        let report = run_loop_core(
+            LoopRunOptions {
+                goal: "goal-cmd".to_string(),
+                worker_cmd: Some("worker-cmd".to_string()),
+                max_turns: 10,
+                max_wall: None,
+                poll: false,
+                learn: false,
+                run_id: "test-cancel-during".to_string(),
+                run_log_dir: tempdir.join("runs"),
+                stop_file: tempdir.join("STOP"),
+                collection: String::new(),
+                track_savings: false,
+                max_remediation_attempts: 0,
+                cancel,
+                on_progress: None,
+            },
+            Some(&backend),
+            &anchor,
+            &mut commands,
+        )
+        .await
+        .expect("run_loop_core should not error on cancellation during worker");
+
+        assert_eq!(report.outcome, "cancelled");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "cancellation should exit within 5 s, not wait for the 60 s worker"
+        );
+        // Worker must have been entered (turn 1 started) before the token fired.
+        assert_eq!(
+            worker_calls.load(Ordering::Relaxed),
+            1,
+            "worker should have been entered once"
+        );
+    }
+
+    /// `on_progress` is called at least 3 times when the loop runs multiple turns.
+    #[tokio::test]
+    async fn loop_core_emits_progress_events() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let tempdir = TempDir::new("loop-core-progress");
+        let backend = FilesBackend::new(tempdir.path());
+        let anchor = AnchorAnchorStore::new(tempdir.path());
+        // Passes on the 4th verifier call (0 = initial, 1/2/3 = turns 1-3).
+        let mut commands = MockLoopCommands::new(3);
+
+        let event_count = Arc::new(AtomicU32::new(0));
+        let ec = Arc::clone(&event_count);
+        let on_progress: Option<LoopProgressCallback> = Some(Arc::new(
+            move |_progress: f64, _total: Option<f64>, _msg: Option<String>| {
+                ec.fetch_add(1, Ordering::Relaxed);
+            },
+        ));
+
+        let report = run_loop_core(
+            LoopRunOptions {
+                goal: "goal-cmd".to_string(),
+                worker_cmd: Some("worker-cmd".to_string()),
+                max_turns: 5,
+                max_wall: None,
+                poll: false,
+                learn: false,
+                run_id: "test-progress".to_string(),
+                run_log_dir: tempdir.join("runs"),
+                stop_file: tempdir.join("STOP"),
+                collection: String::new(),
+                track_savings: false,
+                max_remediation_attempts: 0,
+                cancel: CancellationToken::new(),
+                on_progress,
+            },
+            Some(&backend),
+            &anchor,
+            &mut commands,
+        )
+        .await
+        .expect("loop should succeed");
+
+        assert_eq!(report.outcome, "success");
+        let count = event_count.load(Ordering::Relaxed);
+        // 3 turns × 3 events each (turn-start, pre-verify, post-verify) = 9 events minimum.
+        assert!(
+            count >= 3,
+            "expected at least 3 progress events (got {count}); one per turn minimum"
+        );
     }
 }

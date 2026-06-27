@@ -13,7 +13,7 @@ use aquifer::{
 use artesian_core::{AgentBinding, AgentCatalog, AgentCatalogEntry, AgentModel, Mode, Role};
 use artesian_mcp::{
     AnchorSetRequest, AnswerRequest, BindRequest, CommitRequest, DelegateRequest, FindRequest,
-    LearnRequest, MemoryServer, RelationRequest, SessionCheckpointRequest,
+    LearnRequest, LoopRequest, MemoryServer, RelationRequest, SessionCheckpointRequest,
     SessionResumeByTaskRequest, SessionResumeRequest, SkillsRequest, StoreRequest,
     TeamCreateRequest, TeamMessageKindRequest, TeamMessageRequest, TeamSpawnRequest,
     TeamStatusRequest, TeamTaskAddRequest, TeamTaskClaimRequest, TeamTaskCompleteRequest,
@@ -21,6 +21,7 @@ use artesian_mcp::{
 };
 use artesian_test_support::TempDir;
 use rmcp::handler::server::wrapper::Parameters;
+use tokio_util::sync::CancellationToken;
 
 #[tokio::test]
 async fn memory_tools_store_and_find_with_files_backend() {
@@ -594,10 +595,13 @@ async fn orchestrate_delegate_timeout_uses_supervised_cleanup() {
         }]);
 
     let result = server
-        .orchestrate_delegate(Parameters(DelegateRequest {
-            role: "worker".to_string(),
-            task: "Keep a child process alive until timeout".to_string(),
-        }))
+        .orchestrate_delegate_inner(
+            DelegateRequest {
+                role: "worker".to_string(),
+                task: "Keep a child process alive until timeout".to_string(),
+            },
+            CancellationToken::new(),
+        )
         .await;
     let Err(error) = result else {
         panic!("delegation should time out");
@@ -629,10 +633,13 @@ async fn orchestrate_delegate_error_redacts_process_secrets() {
         }]);
 
     let result = server
-        .orchestrate_delegate(Parameters(DelegateRequest {
-            role: "worker".to_string(),
-            task: "Fail with a secret-bearing stderr".to_string(),
-        }))
+        .orchestrate_delegate_inner(
+            DelegateRequest {
+                role: "worker".to_string(),
+                task: "Fail with a secret-bearing stderr".to_string(),
+            },
+            CancellationToken::new(),
+        )
         .await;
     let Err(error) = result else {
         panic!("delegation should fail");
@@ -671,10 +678,13 @@ async fn orchestrate_delegate_tolerates_unread_stdin_and_redacts() {
     // breaks when the worker exits unread — exercising the broken-pipe path deterministically.
     let big_task = "x".repeat(256 * 1024);
     let result = server
-        .orchestrate_delegate(Parameters(DelegateRequest {
-            role: "worker".to_string(),
-            task: big_task,
-        }))
+        .orchestrate_delegate_inner(
+            DelegateRequest {
+                role: "worker".to_string(),
+                task: big_task,
+            },
+            CancellationToken::new(),
+        )
         .await;
     let Err(error) = result else {
         panic!("delegation should fail");
@@ -751,17 +761,20 @@ async fn team_lifecycle_uses_definitions_plan_gate_and_cleanup() {
     );
 
     server
-        .team_message(Parameters(TeamMessageRequest {
-            team_id: "team".to_string(),
-            from: "judge-a".to_string(),
-            to: Some("worker-a".to_string()),
-            kind: TeamMessageKindRequest::Review,
-            content: "Plan approved".to_string(),
-            task_id: Some(task.task_id.clone()),
-            approved: Some(true),
-            execute: Some(false),
-            resume_packet: None,
-        }))
+        .team_message_inner(
+            TeamMessageRequest {
+                team_id: "team".to_string(),
+                from: "judge-a".to_string(),
+                to: Some("worker-a".to_string()),
+                kind: TeamMessageKindRequest::Review,
+                content: "Plan approved".to_string(),
+                task_id: Some(task.task_id.clone()),
+                approved: Some(true),
+                execute: Some(false),
+                resume_packet: None,
+            },
+            CancellationToken::new(),
+        )
         .await
         .expect("review should approve plan");
     let claimed = server
@@ -775,17 +788,20 @@ async fn team_lifecycle_uses_definitions_plan_gate_and_cleanup() {
         .0;
     assert!(claimed.task.is_some());
     let message = server
-        .team_message(Parameters(TeamMessageRequest {
-            team_id: "team".to_string(),
-            from: "worker-a".to_string(),
-            to: Some("worker-a".to_string()),
-            kind: TeamMessageKindRequest::Ask,
-            content: "Execute the task".to_string(),
-            task_id: Some(task.task_id.clone()),
-            approved: None,
-            execute: Some(true),
-            resume_packet: None,
-        }))
+        .team_message_inner(
+            TeamMessageRequest {
+                team_id: "team".to_string(),
+                from: "worker-a".to_string(),
+                to: Some("worker-a".to_string()),
+                kind: TeamMessageKindRequest::Ask,
+                content: "Execute the task".to_string(),
+                task_id: Some(task.task_id.clone()),
+                approved: None,
+                execute: Some(true),
+                resume_packet: None,
+            },
+            CancellationToken::new(),
+        )
         .await
         .expect("worker message should execute")
         .0;
@@ -854,17 +870,20 @@ async fn team_message_redacts_success_output_and_event_log() {
         .expect("worker should spawn");
 
     let response = server
-        .team_message(Parameters(TeamMessageRequest {
-            team_id: "team".to_string(),
-            from: "worker-a".to_string(),
-            to: Some("worker-a".to_string()),
-            kind: TeamMessageKindRequest::Ask,
-            content: format!("use token={secret}"),
-            task_id: None,
-            approved: None,
-            execute: Some(true),
-            resume_packet: None,
-        }))
+        .team_message_inner(
+            TeamMessageRequest {
+                team_id: "team".to_string(),
+                from: "worker-a".to_string(),
+                to: Some("worker-a".to_string()),
+                kind: TeamMessageKindRequest::Ask,
+                content: format!("use token={secret}"),
+                task_id: None,
+                approved: None,
+                execute: Some(true),
+                resume_packet: None,
+            },
+            CancellationToken::new(),
+        )
         .await
         .expect("message should execute")
         .0;
@@ -1050,23 +1069,26 @@ fn pid_alive(pid: u32) -> bool {
 
 /// `orchestrate.loop` is mode-gated (requires orchestrate or full) and, when goal holds
 /// immediately, returns outcome="success" with 0 turns without running the worker.
+/// Uses `orchestrate_loop_inner` so the test does not need to construct a `Peer<RoleServer>`.
 #[tokio::test]
 async fn orchestrate_loop_is_mode_gated_and_succeeds_when_goal_holds_immediately() {
-    use artesian_mcp::LoopRequest;
-
     let tempdir = TempDir::new("mcp-loop");
 
     // Memory mode: tool must be refused.
     let server_mem = MemoryServer::new(tempdir.path()).with_mode(artesian_core::Mode::Memory);
     let result = server_mem
-        .orchestrate_loop(Parameters(LoopRequest {
-            goal: "true".to_string(),
-            worker: None,
-            max_turns: None,
-            max_wall_secs: None,
-            no_learn: Some(true),
-            max_remediation_attempts: None,
-        }))
+        .orchestrate_loop_inner(
+            LoopRequest {
+                goal: "true".to_string(),
+                worker: None,
+                max_turns: None,
+                max_wall_secs: None,
+                no_learn: Some(true),
+                max_remediation_attempts: None,
+            },
+            CancellationToken::new(),
+            None,
+        )
         .await;
     assert!(
         result.is_err(),
@@ -1082,14 +1104,18 @@ async fn orchestrate_loop_is_mode_gated_and_succeeds_when_goal_holds_immediately
     // Orchestrate mode: `true` exits 0 immediately — goal already holds, 0 turns.
     let server_orch = MemoryServer::new(tempdir.path()).with_mode(artesian_core::Mode::Orchestrate);
     let response = server_orch
-        .orchestrate_loop(Parameters(LoopRequest {
-            goal: "true".to_string(),
-            worker: None,
-            max_turns: Some(5),
-            max_wall_secs: None,
-            no_learn: Some(true),
-            max_remediation_attempts: None,
-        }))
+        .orchestrate_loop_inner(
+            LoopRequest {
+                goal: "true".to_string(),
+                worker: None,
+                max_turns: Some(5),
+                max_wall_secs: None,
+                no_learn: Some(true),
+                max_remediation_attempts: None,
+            },
+            CancellationToken::new(),
+            None,
+        )
         .await
         .expect("orchestrate.loop should succeed when goal holds immediately")
         .0;
@@ -1098,24 +1124,26 @@ async fn orchestrate_loop_is_mode_gated_and_succeeds_when_goal_holds_immediately
     assert!(!response.run_log_path.is_empty());
 }
 
-/// `orchestrate.loop` runs one worker turn when the goal does not hold on the initial check.
-/// We use `false` as the goal (never passes) so we exercise max-turns.
+/// `orchestrate.loop` runs to max-turns when the goal never holds.
+/// Uses `orchestrate_loop_inner` so the test does not need a `Peer<RoleServer>`.
 #[tokio::test]
 async fn orchestrate_loop_reaches_max_turns_when_goal_never_holds() {
-    use artesian_mcp::LoopRequest;
-
     let tempdir = TempDir::new("mcp-loop-max-turns");
     let server = MemoryServer::new(tempdir.path()).with_mode(artesian_core::Mode::Orchestrate);
 
     let response = server
-        .orchestrate_loop(Parameters(LoopRequest {
-            goal: "false".to_string(),
-            worker: Some("true".to_string()),
-            max_turns: Some(2),
-            max_wall_secs: None,
-            no_learn: Some(true),
-            max_remediation_attempts: Some(0), // disable escalation so max-turns fires
-        }))
+        .orchestrate_loop_inner(
+            LoopRequest {
+                goal: "false".to_string(),
+                worker: Some("true".to_string()),
+                max_turns: Some(2),
+                max_wall_secs: None,
+                no_learn: Some(true),
+                max_remediation_attempts: Some(0), // disable escalation so max-turns fires
+            },
+            CancellationToken::new(),
+            None,
+        )
         .await
         .expect("orchestrate.loop should return a report even on max-turns")
         .0;
@@ -1126,6 +1154,90 @@ async fn orchestrate_loop_reaches_max_turns_when_goal_never_holds() {
         response.run_log_path.ends_with(".jsonl"),
         "run_log_path should be a .jsonl file: {}",
         response.run_log_path
+    );
+}
+
+/// `orchestrate_loop_inner` forwards the `on_progress` callback into `run_loop_core`.
+/// This exercises that a client providing a progressToken would receive notifications.
+#[tokio::test]
+#[allow(clippy::type_complexity)]
+async fn orchestrate_loop_inner_emits_progress_events() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    let tempdir = TempDir::new("mcp-loop-progress");
+    let server = MemoryServer::new(tempdir.path()).with_mode(artesian_core::Mode::Orchestrate);
+
+    let event_count = Arc::new(AtomicU32::new(0));
+    let ec = Arc::clone(&event_count);
+    // Use the concrete type so we do not need to import the flume crate directly.
+    #[allow(clippy::type_complexity)]
+    let on_progress: Option<Arc<dyn Fn(f64, Option<f64>, Option<String>) + Send + Sync>> = Some(
+        Arc::new(move |_p: f64, _t: Option<f64>, _m: Option<String>| {
+            ec.fetch_add(1, Ordering::Relaxed);
+        }),
+    );
+
+    // `true` exits 0 immediately — goal already held, so 0 turns — but the initial verify
+    // may or may not call on_progress depending on implementation. Use `false` + 1 turn
+    // to guarantee at least one turn-start event.
+    let response = server
+        .orchestrate_loop_inner(
+            LoopRequest {
+                goal: "false".to_string(),
+                worker: Some("true".to_string()),
+                max_turns: Some(1),
+                max_wall_secs: None,
+                no_learn: Some(true),
+                max_remediation_attempts: Some(0),
+            },
+            CancellationToken::new(),
+            on_progress,
+        )
+        .await
+        .expect("should return a report")
+        .0;
+
+    assert_eq!(response.outcome, "max-turns");
+    let count = event_count.load(Ordering::Relaxed);
+    assert!(
+        count >= 1,
+        "expected at least 1 progress event (turn-start); got {count}"
+    );
+}
+
+/// A pre-cancelled token stops the loop before any turn runs.
+#[tokio::test]
+async fn orchestrate_loop_inner_cancel_stops_loop() {
+    let tempdir = TempDir::new("mcp-loop-cancel");
+    let server = MemoryServer::new(tempdir.path()).with_mode(artesian_core::Mode::Orchestrate);
+
+    let ct = CancellationToken::new();
+    ct.cancel(); // already fired
+
+    let response = server
+        .orchestrate_loop_inner(
+            LoopRequest {
+                goal: "false".to_string(),
+                worker: Some("sleep 60".to_string()),
+                max_turns: Some(10),
+                max_wall_secs: None,
+                no_learn: Some(true),
+                max_remediation_attempts: Some(0),
+            },
+            ct,
+            None,
+        )
+        .await
+        .expect("inner should return a report even when cancelled")
+        .0;
+
+    assert_eq!(
+        response.outcome, "cancelled",
+        "pre-cancelled token must yield outcome 'cancelled'"
+    );
+    assert_eq!(
+        response.turns, 0,
+        "no turns should run when already cancelled"
     );
 }
 

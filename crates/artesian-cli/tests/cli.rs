@@ -569,3 +569,174 @@ fn cli_learn_and_skills_list() {
         "--by-usage output should show usage= field: {list_usage_out}"
     );
 }
+
+/// `memory find` writes a savings entry to ARTESIAN_STATS_DIR and `artesian tokens` reflects it.
+#[test]
+fn memory_find_records_savings_entry_and_tokens_reflects_it() {
+    let tempdir = TempDir::new("cli-savings-find");
+    let home = tempdir.join("home"); // isolate MCP registration writes from the real home dir
+    let stats_dir = tempdir.join("stats");
+    let binary = env!("CARGO_BIN_EXE_artesian");
+
+    let init = Command::new(binary)
+        .arg("init")
+        .env("ARTESIAN_HOME", &home)
+        .current_dir(tempdir.path())
+        .output()
+        .expect("init should run");
+    assert!(init.status.success(), "{}", stderr(&init));
+
+    let store = Command::new(binary)
+        .args(["memory", "store", "Rust is used for core crates"])
+        .env("ARTESIAN_HOME", &home)
+        .current_dir(tempdir.path())
+        .output()
+        .expect("store should run");
+    assert!(store.status.success(), "{}", stderr(&store));
+
+    // `memory find` with ARTESIAN_STATS_DIR pointing to our temp dir.
+    let find = Command::new(binary)
+        .args(["memory", "find", "rust"])
+        .env("ARTESIAN_HOME", &home)
+        .env("ARTESIAN_STATS_DIR", &stats_dir)
+        .current_dir(tempdir.path())
+        .output()
+        .expect("memory find should run");
+    assert!(
+        find.status.success(),
+        "memory find failed: {}",
+        stderr(&find)
+    );
+
+    // A savings JSONL entry must have been written.
+    let log_path = stats_dir.join("token_savings.jsonl");
+    assert!(
+        log_path.exists(),
+        "token_savings.jsonl must exist after `memory find`"
+    );
+    let log_content = std::fs::read_to_string(&log_path).expect("read savings log");
+    assert!(
+        log_content.contains("\"memory.find\""),
+        "savings entry must have op=memory.find; got: {log_content}"
+    );
+
+    // `artesian tokens` must acknowledge the recorded recall.
+    let tokens = Command::new(binary)
+        .args(["tokens"])
+        .env("ARTESIAN_HOME", &home)
+        .env("ARTESIAN_STATS_DIR", &stats_dir)
+        .current_dir(tempdir.path())
+        .output()
+        .expect("artesian tokens should run");
+    assert!(
+        tokens.status.success(),
+        "artesian tokens failed: {}",
+        stderr(&tokens)
+    );
+    let tokens_out = stdout(&tokens);
+    // The command prints "across N recalls"; N must be ≥ 1 after our find.
+    assert!(
+        tokens_out.contains("recall"),
+        "artesian tokens should mention recalls: {tokens_out}"
+    );
+}
+
+/// `memory context` writes a savings entry to ARTESIAN_STATS_DIR.
+#[test]
+fn memory_context_records_savings_entry() {
+    let tempdir = TempDir::new("cli-savings-context");
+    let home = tempdir.join("home");
+    let stats_dir = tempdir.join("stats");
+    let binary = env!("CARGO_BIN_EXE_artesian");
+
+    let init = Command::new(binary)
+        .arg("init")
+        .env("ARTESIAN_HOME", &home)
+        .current_dir(tempdir.path())
+        .output()
+        .expect("init should run");
+    assert!(init.status.success(), "{}", stderr(&init));
+
+    let store = Command::new(binary)
+        .args(["memory", "store", "Rust is used for core crates"])
+        .env("ARTESIAN_HOME", &home)
+        .current_dir(tempdir.path())
+        .output()
+        .expect("store should run");
+    assert!(store.status.success(), "{}", stderr(&store));
+
+    let context = Command::new(binary)
+        .args(["memory", "context", "rust"])
+        .env("ARTESIAN_HOME", &home)
+        .env("ARTESIAN_STATS_DIR", &stats_dir)
+        .current_dir(tempdir.path())
+        .output()
+        .expect("memory context should run");
+    assert!(
+        context.status.success(),
+        "memory context failed: {}",
+        stderr(&context)
+    );
+
+    let log_path = stats_dir.join("token_savings.jsonl");
+    assert!(
+        log_path.exists(),
+        "token_savings.jsonl must exist after `memory context`"
+    );
+    let log_content = std::fs::read_to_string(&log_path).expect("read savings log");
+    assert!(
+        log_content.contains("\"memory.context\""),
+        "savings entry must have op=memory.context; got: {log_content}"
+    );
+}
+
+/// `memory find` with `track_savings = false` in the config writes no savings entry.
+#[test]
+fn memory_find_track_savings_false_writes_nothing() {
+    let tempdir = TempDir::new("cli-savings-off");
+    let home = tempdir.join("home");
+    let stats_dir = tempdir.join("stats");
+    let binary = env!("CARGO_BIN_EXE_artesian");
+
+    let init = Command::new(binary)
+        .arg("init")
+        .env("ARTESIAN_HOME", &home)
+        .current_dir(tempdir.path())
+        .output()
+        .expect("init should run");
+    assert!(init.status.success(), "{}", stderr(&init));
+
+    // Patch track_savings = false into artesian.toml.
+    let config_path = tempdir.join("artesian.toml");
+    let config_text = std::fs::read_to_string(&config_path).expect("read artesian.toml");
+    let patched = if config_text.contains("track_savings") {
+        config_text.replace("track_savings = true", "track_savings = false")
+    } else {
+        // Append under [memory] — find the section and inject.
+        config_text + "\ntrack_savings = false\n"
+    };
+    std::fs::write(&config_path, patched).expect("write patched config");
+
+    let store = Command::new(binary)
+        .args(["memory", "store", "some content"])
+        .env("ARTESIAN_HOME", &home)
+        .current_dir(tempdir.path())
+        .output()
+        .expect("store should run");
+    assert!(store.status.success(), "{}", stderr(&store));
+
+    let find = Command::new(binary)
+        .args(["memory", "find", "content"])
+        .env("ARTESIAN_HOME", &home)
+        .env("ARTESIAN_STATS_DIR", &stats_dir)
+        .current_dir(tempdir.path())
+        .output()
+        .expect("memory find should run");
+    assert!(find.status.success(), "{}", stderr(&find));
+
+    let log_path = stats_dir.join("token_savings.jsonl");
+    assert!(
+        !log_path.exists(),
+        "no savings log when track_savings=false"
+    );
+}

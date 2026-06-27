@@ -154,6 +154,130 @@ async fn judge_gate_admits_clean_candidate() {
     assert!(headgate.render().contains("chose Rust"));
 }
 
+fn make_temp_dir(tag: &str) -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("{tag}-{}-{n}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    dir
+}
+
+/// Verify that qualify.reject records a savings entry with returned=0 and saved=baseline.
+/// Uses `with_savings_dir` to redirect I/O to a controlled temp directory, avoiding any
+/// reliance on ARTESIAN_STATS_DIR env var (which is not safe to mutate in parallel tests).
+#[tokio::test]
+async fn qualify_reject_records_savings_entry() {
+    let stats_dir = make_temp_dir("artesian-qualify-reject");
+
+    // All candidates score below min_score=0.5 → all rejected_relevance.
+    let recall = Arc::new(StaticRecallStore::new(vec![
+        RecallItem::new("n1", "the team chose Rust for the core crates", 0.1),
+        RecallItem::new("n2", "deployment runs on kubernetes every night", 0.1),
+    ]));
+    let config = HeadgateConfig {
+        min_score: 0.5,
+        ..HeadgateConfig::default()
+    };
+    let mut headgate = Headgate::new(recall, config)
+        .with_savings("test-col", true)
+        .with_savings_dir(stats_dir.clone());
+    let metrics = headgate.cycle("rust kubernetes").await.expect("cycle");
+
+    assert_eq!(
+        metrics.rejected_relevance, 2,
+        "both candidates rejected as below threshold"
+    );
+    assert_eq!(metrics.admitted, 0);
+
+    // Verify a qualify.reject savings entry was written for each rejected unit.
+    let log_path = stats_dir.join("token_savings.jsonl");
+    assert!(
+        log_path.exists(),
+        "savings JSONL must be created on rejection"
+    );
+    let content = std::fs::read_to_string(&log_path).expect("read savings log");
+    let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert_eq!(lines.len(), 2, "one savings entry per rejected candidate");
+    for line in &lines {
+        let v: serde_json::Value = serde_json::from_str(line).expect("valid JSON");
+        assert_eq!(v["op"], "qualify.reject", "op must be qualify.reject");
+        assert_eq!(
+            v["returned_tokens"], 0,
+            "returned_tokens must be 0 for a reject"
+        );
+        assert!(
+            v["baseline_tokens"].as_u64().unwrap_or(0) > 0,
+            "baseline_tokens must be > 0 (content has tokens)"
+        );
+        assert_eq!(
+            v["saved_tokens"], v["baseline_tokens"],
+            "saved_tokens must equal baseline_tokens when returned=0"
+        );
+        assert_eq!(v["collection"], "test-col");
+    }
+
+    let _ = std::fs::remove_dir_all(&stats_dir);
+}
+
+/// Verify that with_savings(..., false) disables qualify.reject recording.
+#[tokio::test]
+async fn qualify_reject_track_savings_false_writes_nothing() {
+    let stats_dir = make_temp_dir("artesian-qualify-reject-off");
+
+    let recall = Arc::new(StaticRecallStore::new(vec![RecallItem::new(
+        "n1",
+        "rust is great",
+        0.05, // below threshold
+    )]));
+    let config = HeadgateConfig {
+        min_score: 0.5,
+        ..HeadgateConfig::default()
+    };
+    // track=false → should not write even though a dir is provided.
+    let mut headgate = Headgate::new(recall, config)
+        .with_savings("test-col", false)
+        .with_savings_dir(stats_dir.clone());
+    headgate.cycle("rust").await.expect("cycle");
+
+    let log_path = stats_dir.join("token_savings.jsonl");
+    assert!(
+        !log_path.exists(),
+        "no savings log when track_savings=false"
+    );
+
+    let _ = std::fs::remove_dir_all(&stats_dir);
+}
+
+/// Verify that without with_savings(), no qualify.reject savings are recorded (opt-in).
+#[tokio::test]
+async fn qualify_reject_no_savings_config_writes_nothing() {
+    let stats_dir = make_temp_dir("artesian-qualify-no-savings");
+
+    let recall = Arc::new(StaticRecallStore::new(vec![RecallItem::new(
+        "n1",
+        "rust is great",
+        0.05,
+    )]));
+    let config = HeadgateConfig {
+        min_score: 0.5,
+        ..HeadgateConfig::default()
+    };
+    // No with_savings call → savings_collection is empty string → opt-out.
+    // with_savings_dir is also provided to prove nothing is written there.
+    let mut headgate = Headgate::new(recall, config).with_savings_dir(stats_dir.clone());
+    headgate.cycle("rust").await.expect("cycle");
+
+    let log_path = stats_dir.join("token_savings.jsonl");
+    assert!(
+        !log_path.exists(),
+        "no savings log when with_savings() was never called"
+    );
+
+    let _ = std::fs::remove_dir_all(&stats_dir);
+}
+
 #[cfg(feature = "llm")]
 #[tokio::test]
 async fn llm_compressor_falls_back_when_model_overflows() {

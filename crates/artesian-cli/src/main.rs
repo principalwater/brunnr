@@ -13,11 +13,11 @@ use std::{
 
 use anyhow::{bail, Context, Result};
 use aquifer::{
-    append_eviction_log, consolidation_pass, default_migration_collection, evict,
+    append_eviction_log, consolidation_pass, default_migration_collection, entity_timeline, evict,
     export_okf_bundle, recover_after_compaction, verify_okf_bundle, AnchorAnchorStore,
     CollectionCompat, ConsolidationOptions, DecayConfig, EvictionPolicy, MemoryBackend,
-    MemoryQuery, MemoryScope, MemoryState, MemoryTier, MigrationPlan, SearchHit, SessionAnchor,
-    SessionKey, SessionListFilter, SessionStore, StoreMemory, VectorMemoryConfig,
+    MemoryQuery, MemoryRecord, MemoryScope, MemoryState, MemoryTier, MigrationPlan, SearchHit,
+    SessionAnchor, SessionKey, SessionListFilter, SessionStore, StoreMemory, VectorMemoryConfig,
 };
 use artesian_core::{
     Agent, AgentBinding, ArtesianConfig, MemoryBackendKind, MemoryConfig, Mode, Role, SpawnRequest,
@@ -42,8 +42,8 @@ use flume::{
     TeamWorkerEvent,
 };
 use headgate::{
-    count_tokens, load_savings_rollup, Headgate, HeadgateConfig, LifecycleEntry, MemoryRecallStore,
-    RecallStore, SnapshotEntry, WorkingContextBundle, WorkingContextSnapshot,
+    count_tokens, load_savings_rollup, record_savings, Headgate, HeadgateConfig, LifecycleEntry,
+    MemoryRecallStore, RecallStore, SnapshotEntry, WorkingContextBundle, WorkingContextSnapshot,
 };
 use headrace::{
     ClaimRequest, CommandVerifier, FilesTaskStore, NewTask, TaskKind, TaskStore, VectorTaskStore,
@@ -969,6 +969,28 @@ enum MemoryCommand {
         #[arg(long, value_enum)]
         backend: Option<BackendArg>,
     },
+    /// Print the temporal profile (facts ordered by time) for a named entity.
+    ///
+    /// Fetches all records mentioning `entity` (matched case-insensitively against tags and
+    /// extracted named entities in content) and prints them oldest-first. Useful for tracing
+    /// how knowledge about a specific component, acronym, or concept has evolved over time.
+    ///
+    /// Examples:
+    ///   artesian memory timeline RateLimit
+    ///   artesian memory timeline BackgroundJobRetryPolicy --limit 50
+    Timeline {
+        /// Entity name to look up (a tag, CamelCase identifier, or ALL-CAPS acronym).
+        entity: String,
+        /// Maximum number of records to display (oldest N after entity filtering).
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long, default_value = DEFAULT_CONFIG)]
+        config: PathBuf,
+        #[arg(long, default_value = ".artesian")]
+        root: PathBuf,
+        #[arg(long, value_enum)]
+        backend: Option<BackendArg>,
+    },
     /// Evict memories: soft-archive (default) or hard-delete (--hard) by TTL, LRU, or score.
     ///
     /// Soft-archive sets `state=archived` — records remain stored and retrievable via
@@ -1478,6 +1500,8 @@ async fn run_loop(options: LoopCliOptions) -> Result<()> {
         collection: memory_config.collection.clone(),
         track_savings: memory_config.track_savings,
         max_remediation_attempts: options.max_remediation_attempts,
+        cancel: Default::default(),
+        on_progress: None,
     };
     let mut commands = ShellLoopCommands;
     let report = run_loop_core(
@@ -2642,7 +2666,10 @@ async fn memory(command: MemoryCommand) -> Result<()> {
             root,
             backend,
         } => {
-            let backend = open_backend_for_command(&config, root, backend)?;
+            // Use memory_config_for_command (instead of the one-shot open_backend_for_command)
+            // so we have access to collection + track_savings for savings recording.
+            let memory_config = memory_config_for_command(&config, root, backend)?;
+            let backend = open_memory_backend(&memory_config)?;
             let diversify = mmr || mmr_lambda.is_some();
             // For MMR, fetch a larger pool so the re-rank has duplicates to shed.
             let fetch_limit = if diversify {
@@ -2674,9 +2701,21 @@ async fn memory(command: MemoryCommand) -> Result<()> {
                 )
                 .await?;
             }
-            for hit in hits {
-                println!("{}", format_memory_hit(&hit));
+            // ── Token-savings accounting (best-effort, respects track_savings) ──────────
+            // CLI `memory find` returns full record content (no truncation), so
+            // baseline == returned and saved ≈ 0 — matching the MCP memory.find behaviour.
+            // Recording the call still lets `artesian tokens --by-op` show the recall count.
+            let baseline_tokens: usize = hits.iter().map(|h| count_tokens(&h.record.content)).sum();
+            for hit in &hits {
+                println!("{}", format_memory_hit(hit));
             }
+            record_savings(
+                "memory.find",
+                &memory_config.collection,
+                baseline_tokens,
+                baseline_tokens,
+                memory_config.track_savings,
+            );
         }
         MemoryCommand::Context {
             query,
@@ -2711,13 +2750,37 @@ async fn memory(command: MemoryCommand) -> Result<()> {
                 )
                 .await?;
             }
-            if let Some(index) = index {
+            // ── Token-savings accounting (best-effort, respects track_savings) ──────────
+            // Baseline = full index.md content + full hit record content.
+            // Returned = truncated index slice (`index_chars`) + full hit content.
+            // The savings come from index truncation when index.md > index_chars characters.
+            let index_baseline_tokens = {
+                let full_path = PathBuf::from(&memory_config.root)
+                    .join("memory")
+                    .join("index.md");
+                if full_path.exists() {
+                    count_tokens(&fs::read_to_string(&full_path).unwrap_or_default())
+                } else {
+                    0
+                }
+            };
+            let index_returned_tokens = index.as_deref().map(count_tokens).unwrap_or(0);
+            // CLI context returns full record content (no per-hit truncation).
+            let hits_baseline: usize = hits.iter().map(|h| count_tokens(&h.record.content)).sum();
+            if let Some(index) = &index {
                 println!("# index.md\n{index}");
             }
             println!("# memory.find");
-            for hit in hits {
-                println!("{}", format_memory_hit(&hit));
+            for hit in &hits {
+                println!("{}", format_memory_hit(hit));
             }
+            record_savings(
+                "memory.context",
+                &memory_config.collection,
+                index_returned_tokens + hits_baseline,
+                index_baseline_tokens + hits_baseline,
+                memory_config.track_savings,
+            );
         }
         MemoryCommand::Distill {
             text,
@@ -2947,6 +3010,57 @@ async fn memory(command: MemoryCommand) -> Result<()> {
                 backend,
             })
             .await?
+        }
+        MemoryCommand::Timeline {
+            entity,
+            limit,
+            config,
+            root,
+            backend,
+        } => {
+            let backend = open_backend_for_command(&config, root, backend)?;
+
+            // Gather candidates from both the relation graph (by_entity) and text/vector find.
+            // Most records are stored without explicit relations, so find() is the primary path.
+            let by_entity_records: Vec<MemoryRecord> = backend.by_entity(&entity).await?;
+            let fetch_limit = limit.saturating_mul(5).max(50);
+            let find_hits = backend
+                .find(MemoryQuery::new(entity.clone()).with_limit(fetch_limit))
+                .await?;
+
+            // Merge the two result sets; deduplicate by node_id
+            let mut seen: std::collections::HashSet<String> = by_entity_records
+                .iter()
+                .map(|r| r.node_id.clone())
+                .collect();
+            let mut all_records: Vec<MemoryRecord> = by_entity_records;
+            for hit in find_hits {
+                if seen.insert(hit.record.node_id.clone()) {
+                    all_records.push(hit.record);
+                }
+            }
+
+            // Filter to records actually mentioning the entity, sort oldest-first
+            let timeline: Vec<MemoryRecord> = entity_timeline(&all_records, &entity)
+                .into_iter()
+                .take(limit)
+                .collect();
+
+            if timeline.is_empty() {
+                println!("(no records found for entity: {entity})");
+            } else {
+                println!("timeline for: {entity}  ({} records)", timeline.len());
+                println!("{:-<60}", "");
+                for record in &timeline {
+                    let date = record.created_at.format("%Y-%m-%d %H:%M:%S UTC");
+                    let snippet = if record.content.len() > 120 {
+                        format!("{}…", &record.content[..120])
+                    } else {
+                        record.content.clone()
+                    };
+                    println!("  {date}  [{}]\n    {snippet}", record.node_id);
+                }
+            }
         }
     }
     Ok(())
@@ -4928,6 +5042,8 @@ mod tests {
             collection: String::new(),
             track_savings: false,
             max_remediation_attempts: flume::loop_core::LOOP_REMEDIATION_ATTEMPTS_DEFAULT,
+            cancel: Default::default(),
+            on_progress: None,
         }
     }
 
