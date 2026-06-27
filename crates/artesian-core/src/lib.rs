@@ -16,6 +16,7 @@ pub use agent::{
 pub use config::{
     AccConfig, AccLlmConfig, AgentBinding, ArtesianConfig, CoordinationConfig, MemoryBackendKind,
     MemoryConfig, Mode, ResourceQuotaConfig, SemanticCacheConfig, VerifierCommandConfig,
+    DEFAULT_RERANK_CANDIDATES,
 };
 pub use coordination::{Barrier, ResourceQuota, TokenAccounting};
 pub use event::{EventEnvelope, EventSender, EventType};

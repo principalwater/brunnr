@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::Role;
 
+pub const DEFAULT_RERANK_CANDIDATES: usize = 50;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum Mode {
@@ -49,6 +51,15 @@ pub struct MemoryConfig {
     pub debate_enabled: bool,
     #[serde(default)]
     pub llm_consolidation_enabled: bool,
+    /// Enable the neural cross-encoder reranker for vector-backed retrieval.
+    ///
+    /// Disabled by default because the model has load and inference cost.
+    #[serde(default)]
+    pub rerank: bool,
+    /// Candidate pool fused before neural reranking. `0` means "use the default pool" when
+    /// `rerank = true`, and no reranking when `rerank = false`.
+    #[serde(default)]
+    pub rerank_candidates: usize,
     /// Semantic query cache over a vector backend (no effect on the files backend).
     #[serde(default)]
     pub semantic_cache: SemanticCacheConfig,
@@ -66,6 +77,17 @@ pub struct MemoryConfig {
 }
 
 impl MemoryConfig {
+    pub fn effective_rerank_candidates(&self) -> usize {
+        if self.rerank {
+            match self.rerank_candidates {
+                0 => DEFAULT_RERANK_CANDIDATES,
+                candidates => candidates,
+            }
+        } else {
+            0
+        }
+    }
+
     /// Resolve the configured Qdrant API key without logging or exposing the secret.
     ///
     /// Precedence is:
@@ -381,6 +403,8 @@ impl ArtesianConfig {
                 multi_query_enabled: false,
                 debate_enabled: false,
                 llm_consolidation_enabled: false,
+                rerank: false,
+                rerank_candidates: 0,
                 semantic_cache: SemanticCacheConfig::default(),
                 track_access: default_track_access(),
                 track_savings: default_track_savings(),

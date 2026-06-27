@@ -3875,10 +3875,8 @@ pub fn open_memory_backend(config: &MemoryConfig) -> anyhow::Result<Arc<dyn Memo
             let store = SqliteVecVectorStore::open(SqliteVecVectorStoreConfig::new(sqlite_path(
                 &config.root,
             )))?;
-            let backend = VectorMemoryBackend::new(
-                store,
-                VectorMemoryConfig::new(&config.collection).with_track_access(config.track_access),
-            )?;
+            let backend = VectorMemoryBackend::new(store, vector_memory_config_from(config))?;
+            let backend = attach_configured_reranker(backend, config);
             Ok(finish_vector_backend(backend, config))
         }
         MemoryBackendKind::Qdrant => open_qdrant_backend(config),
@@ -3898,6 +3896,56 @@ fn semantic_cache_from_config(config: &MemoryConfig) -> Option<aquifer::Semantic
         cache = cache.with_ttl(Duration::from_secs(ttl));
     }
     Some(cache)
+}
+
+fn vector_memory_config_from(config: &MemoryConfig) -> VectorMemoryConfig {
+    let mut vector_config =
+        VectorMemoryConfig::new(&config.collection).with_track_access(config.track_access);
+    if config.rerank {
+        vector_config = vector_config
+            .with_rerank(true)
+            .with_rerank_candidates(config.effective_rerank_candidates());
+    }
+    vector_config
+}
+
+fn attach_configured_reranker<V>(
+    backend: VectorMemoryBackend<V>,
+    config: &MemoryConfig,
+) -> VectorMemoryBackend<V>
+where
+    V: aquifer::VectorStore,
+{
+    attach_configured_reranker_with(backend, config, || {
+        aquifer::FastembedReranker::new()
+            .map(|reranker| Arc::new(reranker) as Arc<dyn aquifer::Reranker>)
+    })
+}
+
+fn attach_configured_reranker_with<V, F, E>(
+    backend: VectorMemoryBackend<V>,
+    config: &MemoryConfig,
+    load_reranker: F,
+) -> VectorMemoryBackend<V>
+where
+    V: aquifer::VectorStore,
+    F: FnOnce() -> std::result::Result<Arc<dyn aquifer::Reranker>, E>,
+    E: std::fmt::Display,
+{
+    if !config.rerank {
+        return backend;
+    }
+
+    match load_reranker() {
+        Ok(reranker) => backend.with_reranker(reranker),
+        Err(error) => {
+            eprintln!(
+                "warning: neural rerank requested but Fastembed reranker failed to load; \
+                 falling back to hybrid RRF: {error}"
+            );
+            backend
+        }
+    }
 }
 
 fn finish_vector_backend<V: aquifer::VectorStore + Send + Sync + 'static>(
@@ -3924,10 +3972,8 @@ fn open_qdrant_backend(config: &MemoryConfig) -> anyhow::Result<Arc<dyn MemoryBa
         .or_else(|| env::var("QDRANT_REST_URL").ok());
     vector_config.api_key = config.resolve_qdrant_api_key();
     let store = QdrantVectorStore::connect(vector_config)?;
-    let backend = VectorMemoryBackend::new(
-        store,
-        VectorMemoryConfig::new(&config.collection).with_track_access(config.track_access),
-    )?;
+    let backend = VectorMemoryBackend::new(store, vector_memory_config_from(config))?;
+    let backend = attach_configured_reranker(backend, config);
     Ok(finish_vector_backend(backend, config))
 }
 
@@ -4194,4 +4240,130 @@ fn first_line_or_default(input: &str) -> String {
         .filter(|line| !line.trim().is_empty())
         .unwrap_or("Delegated task")
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+
+    use aquifer::{MemoryResult, SearchHit};
+    use artesian_core::DEFAULT_RERANK_CANDIDATES;
+
+    use super::*;
+
+    struct TestEmbedder;
+
+    impl aquifer::TextEmbedder for TestEmbedder {
+        fn embed_query(&self, _text: &str) -> MemoryResult<Vec<f32>> {
+            Ok(vec![0.0; aquifer::PINNED_FASTEMBED_DIMENSIONS])
+        }
+
+        fn embed_passage(&self, _text: &str) -> MemoryResult<Vec<f32>> {
+            Ok(vec![0.0; aquifer::PINNED_FASTEMBED_DIMENSIONS])
+        }
+    }
+
+    struct TestReranker;
+
+    impl aquifer::Reranker for TestReranker {
+        fn rerank(
+            &self,
+            _query: &str,
+            mut hits: Vec<SearchHit>,
+            limit: usize,
+        ) -> MemoryResult<Vec<SearchHit>> {
+            hits.truncate(limit);
+            Ok(hits)
+        }
+    }
+
+    fn memory_config(rerank: bool, rerank_candidates: usize) -> MemoryConfig {
+        MemoryConfig {
+            backend: MemoryBackendKind::SqliteVec,
+            root: ".artesian".to_string(),
+            collection: "artesian-memory".to_string(),
+            qdrant_url: None,
+            qdrant_rest_url: None,
+            qdrant_api_key_env: None,
+            qdrant_api_key_file: None,
+            local_rerank_enabled: true,
+            hyde_enabled: false,
+            multi_query_enabled: false,
+            debate_enabled: false,
+            llm_consolidation_enabled: false,
+            rerank,
+            rerank_candidates,
+            semantic_cache: Default::default(),
+            track_access: true,
+            track_savings: true,
+        }
+    }
+
+    fn vector_backend(config: &MemoryConfig) -> VectorMemoryBackend<aquifer::SqliteVecVectorStore> {
+        VectorMemoryBackend::with_embedder(
+            aquifer::SqliteVecVectorStore::in_memory().expect("sqlite store"),
+            vector_memory_config_from(config),
+            Arc::new(TestEmbedder),
+        )
+        .expect("vector backend")
+    }
+
+    #[test]
+    fn rerank_false_does_not_load_or_attach_reranker() {
+        let config = memory_config(false, 0);
+        let loader_called = AtomicBool::new(false);
+
+        let backend = attach_configured_reranker_with(vector_backend(&config), &config, || {
+            loader_called.store(true, Ordering::SeqCst);
+            Ok::<Arc<dyn aquifer::Reranker>, &str>(
+                Arc::new(TestReranker) as Arc<dyn aquifer::Reranker>
+            )
+        });
+
+        assert!(!loader_called.load(Ordering::SeqCst));
+        assert!(!backend.has_reranker());
+        assert!(!backend.config().rerank);
+        assert_eq!(backend.config().rerank_candidates, 0);
+        assert!(!backend.rerank_active_for_limit(10));
+    }
+
+    #[test]
+    fn rerank_true_uses_default_pool_and_attaches_mock_reranker() {
+        let config = memory_config(true, 0);
+
+        let backend = attach_configured_reranker_with(vector_backend(&config), &config, || {
+            Ok::<Arc<dyn aquifer::Reranker>, &str>(
+                Arc::new(TestReranker) as Arc<dyn aquifer::Reranker>
+            )
+        });
+
+        assert!(backend.has_reranker());
+        assert!(backend.config().rerank);
+        assert_eq!(
+            backend.config().rerank_candidates,
+            DEFAULT_RERANK_CANDIDATES
+        );
+        assert!(backend.config().rerank_candidates > 10);
+        assert!(backend.rerank_active_for_limit(10));
+    }
+
+    #[test]
+    fn rerank_load_failure_falls_back_without_attachment() {
+        let config = memory_config(true, 0);
+
+        let backend = attach_configured_reranker_with(vector_backend(&config), &config, || {
+            Err::<Arc<dyn aquifer::Reranker>, &str>("offline")
+        });
+
+        assert!(!backend.has_reranker());
+        assert!(backend.config().rerank);
+        assert_eq!(
+            backend.config().rerank_candidates,
+            DEFAULT_RERANK_CANDIDATES
+        );
+        assert!(!backend.rerank_active_for_limit(10));
+    }
 }

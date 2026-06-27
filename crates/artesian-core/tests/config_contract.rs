@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use artesian_core::{AccConfig, AccLlmConfig, AgentBinding, ArtesianConfig, Role};
+use artesian_core::{
+    AccConfig, AccLlmConfig, AgentBinding, ArtesianConfig, Role, DEFAULT_RERANK_CANDIDATES,
+};
 
 #[test]
 fn config_round_trips_through_toml() {
@@ -73,4 +75,40 @@ fn semantic_cache_config_round_trips() {
     assert_eq!(decoded, config);
     assert!(decoded.memory.semantic_cache.enabled);
     assert_eq!(decoded.memory.semantic_cache.ttl_seconds, Some(300));
+}
+
+#[test]
+fn neural_rerank_config_defaults_and_round_trips() {
+    let toml = r#"
+mode = "memory"
+
+[memory]
+backend = "sqlite-vec"
+root = ".artesian"
+collection = "artesian-memory"
+rerank = true
+
+[[agents]]
+role = "master"
+agent = "claude-code"
+"#;
+    let config = ArtesianConfig::from_toml(toml).expect("config should decode");
+
+    assert!(config.memory.rerank);
+    assert_eq!(config.memory.rerank_candidates, 0);
+    assert_eq!(
+        config.memory.effective_rerank_candidates(),
+        DEFAULT_RERANK_CANDIDATES
+    );
+
+    let mut config = ArtesianConfig::memory_files(".artesian", Vec::new());
+    config.memory.rerank = true;
+    config.memory.rerank_candidates = 64;
+    let encoded = config.to_toml().expect("encode");
+    let decoded = ArtesianConfig::from_toml(&encoded).expect("decode");
+
+    assert_eq!(decoded, config);
+    assert!(encoded.contains("rerank = true"));
+    assert!(encoded.contains("rerank_candidates = 64"));
+    assert_eq!(decoded.memory.effective_rerank_candidates(), 64);
 }

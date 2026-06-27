@@ -49,6 +49,8 @@ async fn sigterm_to_orchestrator_kills_tracked_worker_process_group() {
             multi_query_enabled: false,
             debate_enabled: false,
             llm_consolidation_enabled: false,
+            rerank: false,
+            rerank_candidates: 0,
             semantic_cache: Default::default(),
             track_access: true,
             track_savings: false,

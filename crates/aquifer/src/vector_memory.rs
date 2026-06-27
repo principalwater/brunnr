@@ -160,6 +160,11 @@ pub struct VectorMemoryConfig {
     #[serde(default)]
     pub rerank_candidates: usize,
 
+    /// Explicit neural reranking flag. Runtime constructors keep this off by default and only
+    /// enable it when they also attach a reranker.
+    #[serde(default)]
+    pub rerank: bool,
+
     /// When `true` (the default), every `find` call bumps `access_count` and `last_access`
     /// on returned records (best-effort, non-blocking upsert writeback). Set to `false` to
     /// disable at the cost of losing reinforcement signals for decay/promotion.
@@ -201,8 +206,15 @@ impl VectorMemoryConfig {
             parent_context_auto: true,
             parent_context_max_chars: default_parent_context_max_chars(),
             rerank_candidates: 0,
+            rerank: false,
             track_access: true,
         }
+    }
+
+    /// Enable or disable neural reranking.
+    pub fn with_rerank(mut self, enabled: bool) -> Self {
+        self.rerank = enabled;
+        self
     }
 
     /// Set the reranking candidate pool (`0` disables reranking).
@@ -295,6 +307,7 @@ impl<V: VectorStore> VectorMemoryBackend<V> {
     /// Attach a reranker; combined with `config.rerank_candidates > 0`, retrieval reranks a
     /// larger candidate pool down to the requested limit.
     pub fn with_reranker(mut self, reranker: Arc<dyn crate::Reranker>) -> Self {
+        self.config.rerank = true;
         self.reranker = Some(reranker);
         self
     }
@@ -305,6 +318,14 @@ impl<V: VectorStore> VectorMemoryBackend<V> {
 
     pub fn config(&self) -> &VectorMemoryConfig {
         &self.config
+    }
+
+    pub fn has_reranker(&self) -> bool {
+        self.reranker.is_some()
+    }
+
+    pub fn rerank_active_for_limit(&self, limit: usize) -> bool {
+        self.config.rerank && self.reranker.is_some() && self.config.rerank_candidates > limit
     }
 
     /// The shared text embedder, for reuse (e.g. keying a semantic cache in the same space).
@@ -865,8 +886,7 @@ impl<V: VectorStore> MemoryBackend for VectorMemoryBackend<V> {
         async move {
             // When a reranker is attached, fuse a larger candidate pool and rerank it down to
             // `query.limit` before small-to-big — better precision into the same budget.
-            let rerank_active =
-                self.reranker.is_some() && self.config.rerank_candidates > query.limit;
+            let rerank_active = self.rerank_active_for_limit(query.limit);
             let pool_limit = if rerank_active {
                 self.config.rerank_candidates
             } else {
