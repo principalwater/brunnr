@@ -2989,6 +2989,7 @@ verified skill + spec + auto-invariants to memory. Brakes: max_turns (default 10
                 .unwrap_or(loop_core::LOOP_REMEDIATION_ATTEMPTS_DEFAULT),
             cancel,
             on_progress,
+            quota: flume::quota::QuotaLoopConfig::default(),
         };
         let mut commands = McpShellLoopCommands;
         let report =

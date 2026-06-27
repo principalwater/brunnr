@@ -39,6 +39,7 @@ use flume::loop_core::{
     run_loop_core, stable_content_hash, LoopCommandFuture, LoopCommands, LoopRunOptions,
     LOOP_SKILL_TAG,
 };
+use flume::quota::{read_local_quota, QuotaLoopConfig, QuotaStatusKind};
 use flume::{
     load_role_definitions, role_summaries, TeamCreate, TeamGcOptions, TeamMessage, TeamMessageKind,
     TeamRuntime, TeamRuntimeConfig, TeamSpawn, TeamTaskAdd, TeamTaskClaim, TeamTaskComplete,
@@ -360,6 +361,12 @@ enum Command {
         #[arg(long)]
         by_op: bool,
     },
+    /// Print token-free local coding-agent quota status.
+    Quota {
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Run an autonomous memory-first loop: repeat a worker action until a goal command succeeds
     /// (exit 0), writing a resume anchor each turn. The worker can be any shell command — a script
     /// or an agent CLI such as `codex exec '...'`.
@@ -388,6 +395,12 @@ enum Command {
         /// escalation (the loop will run to --max-turns instead).
         #[arg(long, default_value_t = flume::loop_core::LOOP_REMEDIATION_ATTEMPTS_DEFAULT)]
         max_remediation_attempts: u32,
+        /// Warn when a local coding-agent quota window reaches this used percentage.
+        #[arg(long, default_value_t = flume::quota::DEFAULT_QUOTA_WARN_PCT)]
+        quota_warn_pct: f64,
+        /// Write a continuation checkpoint as soon as any quota warning threshold is crossed.
+        #[arg(long)]
+        checkpoint_on_quota: bool,
         #[arg(long, default_value = ".artesian")]
         root: PathBuf,
         /// Project config; its memory backend is used for per-turn recall/commit. Falls back to a
@@ -1402,6 +1415,7 @@ async fn main() -> Result<()> {
             budget_tokens,
         } => perf(config, root, budget_tokens).await,
         Command::Tokens { json, since, by_op } => tokens_command(json, since, by_op),
+        Command::Quota { json } => quota_command(json),
         Command::Loop {
             goal,
             worker_cmd,
@@ -1410,6 +1424,8 @@ async fn main() -> Result<()> {
             poll,
             no_learn,
             max_remediation_attempts,
+            quota_warn_pct,
+            checkpoint_on_quota,
             root,
             config,
         } => {
@@ -1421,6 +1437,8 @@ async fn main() -> Result<()> {
                 poll,
                 learn: !no_learn,
                 max_remediation_attempts,
+                quota_warn_pct,
+                checkpoint_on_quota,
                 root,
                 config,
             })
@@ -1531,6 +1549,8 @@ struct LoopCliOptions {
     poll: bool,
     learn: bool,
     max_remediation_attempts: u32,
+    quota_warn_pct: f64,
+    checkpoint_on_quota: bool,
     root: PathBuf,
     config: PathBuf,
 }
@@ -1568,6 +1588,11 @@ async fn run_loop(options: LoopCliOptions) -> Result<()> {
         max_remediation_attempts: options.max_remediation_attempts,
         cancel: Default::default(),
         on_progress: None,
+        quota: QuotaLoopConfig {
+            warn_pct: options.quota_warn_pct,
+            checkpoint_on_quota: options.checkpoint_on_quota,
+            ..QuotaLoopConfig::default()
+        },
     };
     let mut commands = ShellLoopCommands;
     let report = run_loop_core(
@@ -5343,6 +5368,44 @@ fn tokens_command(json: bool, since: Option<String>, by_op: bool) -> Result<()> 
     Ok(())
 }
 
+fn quota_command(json: bool) -> Result<()> {
+    let statuses = read_local_quota();
+    if json {
+        println!("{}", serde_json::to_string_pretty(&statuses)?);
+        return Ok(());
+    }
+
+    println!(
+        "{:<8} {:<8} {:<9} {:>7} {:>11} source",
+        "agent", "window", "status", "used", "resets"
+    );
+    for status in statuses {
+        let used = status
+            .pct
+            .map(|pct| format!("{pct:.1}%"))
+            .unwrap_or_else(|| "-".to_string());
+        let resets = status
+            .resets_at
+            .map(|value| value.format("%Y-%m-%dT%H:%MZ").to_string())
+            .unwrap_or_else(|| "-".to_string());
+        let source = status
+            .source
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .or(status.message)
+            .unwrap_or_else(|| "-".to_string());
+        let status_label = match status.status {
+            QuotaStatusKind::Known => "known",
+            QuotaStatusKind::Unknown => "unknown",
+        };
+        println!(
+            "{:<8} {:<8} {:<9} {:>7} {:>11} {}",
+            status.agent, status.window, status_label, used, resets, source
+        );
+    }
+    Ok(())
+}
+
 async fn perf(config_path: PathBuf, root: PathBuf, budget_tokens: Option<usize>) -> Result<()> {
     let memory_config = memory_config_for_command(&config_path, root.clone(), None)?;
     let backend = open_memory_backend(&memory_config)?;
@@ -5551,6 +5614,13 @@ mod tests {
             max_remediation_attempts: flume::loop_core::LOOP_REMEDIATION_ATTEMPTS_DEFAULT,
             cancel: Default::default(),
             on_progress: None,
+            quota: QuotaLoopConfig {
+                reader: flume::quota::QuotaReadOptions {
+                    codex_home: Some(tmp.join("missing-codex")),
+                    claude_roots: vec![tmp.join("missing-claude")],
+                },
+                ..QuotaLoopConfig::default()
+            },
         }
     }
 

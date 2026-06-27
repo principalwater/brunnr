@@ -15,6 +15,7 @@
 //! core free of shell / process specifics so the MCP path can supply its own worker executor.
 
 use std::{
+    collections::BTreeSet,
     fs,
     io::Write,
     path::{Path, PathBuf},
@@ -31,6 +32,11 @@ use aquifer::{
 };
 use headgate::{count_tokens, record_savings};
 use serde_json::{json, Value};
+
+use crate::quota::{
+    quota_threshold_events, read_local_quota_with_options, write_quota_continuation,
+    QuotaContinuationContext, QuotaLoopConfig, QuotaThresholdEvent, QUOTA_CONTINUATION_NOTE,
+};
 
 // ── Brakes / constants ─────────────────────────────────────────────────────────────────────────
 
@@ -153,6 +159,8 @@ pub struct LoopRunOptions {
     /// Drive `peer.notify_progress` from inside a `tokio::spawn` in the closure.
     /// Pass `None` to disable (default for CLI callers).
     pub on_progress: Option<LoopProgressCallback>,
+    /// Local token-free coding-agent quota checks at loop turn boundaries.
+    pub quota: QuotaLoopConfig,
 }
 
 /// Summary returned after `run_loop_core` completes (successfully or via a brake).
@@ -259,6 +267,43 @@ impl LoopRunLog {
             "consecutive_failures": consecutive_failures,
             "reason": compact_inline(reason, LOOP_FAILURE_TRAIL_REASON_CHARS),
             "fix_attempt": fix_attempt,
+        }))
+    }
+
+    pub fn write_quota_warning(
+        &mut self,
+        run_id: &str,
+        turn: u32,
+        event: &QuotaThresholdEvent,
+    ) -> anyhow::Result<()> {
+        self.write_value(json!({
+            "type": "quota-warning",
+            "run_id": run_id,
+            "turn": turn,
+            "threshold_pct": event.threshold_pct,
+            "high": event.high,
+            "quota": event.status,
+        }))
+    }
+
+    pub fn write_quota_checkpoint(
+        &mut self,
+        run_id: &str,
+        turn: u32,
+        event: &QuotaThresholdEvent,
+        key: &aquifer::SessionKey,
+    ) -> anyhow::Result<()> {
+        self.write_value(json!({
+            "type": "quota-checkpoint",
+            "run_id": run_id,
+            "turn": turn,
+            "note": QUOTA_CONTINUATION_NOTE,
+            "session": {
+                "user_id": &key.user_id,
+                "session_id": &key.session_id,
+                "task_id": &key.task_id,
+            },
+            "quota": event.status,
         }))
     }
 
@@ -692,6 +737,7 @@ pub async fn run_loop_core(
     let mut consecutive_failures: u32 = 0;
     let mut failure_trail: Vec<RemediationAttempt> = Vec::new();
     let mut last_failure_reason: Option<String> = None;
+    let mut warned_quota_windows: BTreeSet<(String, String)> = BTreeSet::new();
     for turn in 1..=options.max_turns {
         if let Some(reason) =
             wall_cap_message(started_at, options.max_wall, &format!("turn {turn}"))
@@ -725,6 +771,57 @@ pub async fn run_loop_core(
                 turn.saturating_sub(1),
                 started_at,
                 "loop cancelled by client",
+            );
+        }
+        let quota_statuses = read_local_quota_with_options(&options.quota.reader);
+        let quota_events = quota_threshold_events(
+            &quota_statuses,
+            options.quota.warn_pct,
+            options.quota.high_pct,
+        );
+        for event in &quota_events {
+            let window_key = (event.status.agent.clone(), event.status.window.clone());
+            if warned_quota_windows.insert(window_key) {
+                if let Some(message) = event.status.threshold_message(event.threshold_pct) {
+                    eprintln!("{message}");
+                }
+                log.write_quota_warning(&options.run_id, turn, event)?;
+            }
+        }
+        let checkpoint_event = quota_events.iter().find(|event| event.high).or_else(|| {
+            options
+                .quota
+                .checkpoint_on_quota
+                .then(|| quota_events.first())
+                .flatten()
+        });
+        if let Some(event) = checkpoint_event {
+            let checkpoint = write_quota_continuation(
+                anchor_store,
+                backend,
+                &QuotaContinuationContext {
+                    run_id: &options.run_id,
+                    goal: &options.goal,
+                    worker_cmd: options.worker_cmd.as_deref(),
+                    turn,
+                    run_log_path: log.path(),
+                    last_failed_check: last_check.as_deref(),
+                    event,
+                },
+            )
+            .await?;
+            log.write_quota_checkpoint(&options.run_id, turn, event, &checkpoint.key)?;
+            let reason = format!(
+                "{}; checkpoint session={} task={}",
+                QUOTA_CONTINUATION_NOTE, checkpoint.key.session_id, checkpoint.key.task_id
+            );
+            return finish_loop_early(
+                &mut log,
+                &options.run_id,
+                "quota-checkpoint",
+                turn.saturating_sub(1),
+                started_at,
+                &reason,
             );
         }
         if let Some(cb) = options.on_progress.as_ref() {
@@ -1046,7 +1143,7 @@ fn finish_loop_escalation(
 mod tests {
     use std::sync::Mutex;
 
-    use aquifer::FilesBackend;
+    use aquifer::{FilesBackend, SessionStore};
     use artesian_test_support::TempDir;
 
     use super::*;
@@ -1098,6 +1195,16 @@ mod tests {
         }
     }
 
+    fn test_quota_config(tempdir: &TempDir) -> QuotaLoopConfig {
+        QuotaLoopConfig {
+            reader: crate::quota::QuotaReadOptions {
+                codex_home: Some(tempdir.join("missing-codex")),
+                claude_roots: vec![tempdir.join("missing-claude")],
+            },
+            ..QuotaLoopConfig::default()
+        }
+    }
+
     #[tokio::test]
     async fn loop_core_succeeds_when_goal_holds_on_first_check() {
         let tempdir = TempDir::new("loop-core-immediate");
@@ -1124,6 +1231,7 @@ mod tests {
                 max_remediation_attempts: LOOP_REMEDIATION_ATTEMPTS_DEFAULT,
                 cancel: CancellationToken::new(),
                 on_progress: None,
+                quota: test_quota_config(&tempdir),
             },
             Some(&backend),
             &anchor,
@@ -1162,6 +1270,7 @@ mod tests {
                 max_remediation_attempts: LOOP_REMEDIATION_ATTEMPTS_DEFAULT,
                 cancel: CancellationToken::new(),
                 on_progress: None,
+                quota: test_quota_config(&tempdir),
             },
             Some(&backend),
             &anchor,
@@ -1207,6 +1316,7 @@ mod tests {
                 max_remediation_attempts: 0, // disabled so we reach max-turns
                 cancel: CancellationToken::new(),
                 on_progress: None,
+                quota: test_quota_config(&tempdir),
             },
             Some(&backend),
             &anchor,
@@ -1246,6 +1356,7 @@ mod tests {
                 max_remediation_attempts: LOOP_REMEDIATION_ATTEMPTS_DEFAULT,
                 cancel: CancellationToken::new(),
                 on_progress: None,
+                quota: test_quota_config(&tempdir),
             },
             Some(&backend),
             &anchor,
@@ -1255,6 +1366,142 @@ mod tests {
         .expect("loop should return a report on stop sentinel");
 
         assert_eq!(report.outcome, "stopped");
+    }
+
+    #[tokio::test]
+    async fn loop_core_logs_quota_warning_at_threshold() {
+        let tempdir = TempDir::new("loop-core-quota-warning");
+        let codex_home = tempdir.join("codex");
+        std::fs::create_dir_all(&codex_home).unwrap();
+        std::fs::write(
+            codex_home.join("rate_limits.json"),
+            include_str!("../tests/fixtures/codex-rate-limits.json"),
+        )
+        .unwrap();
+        let backend = FilesBackend::new(tempdir.path());
+        let anchor = AnchorAnchorStore::new(tempdir.path());
+        let mut commands = MockLoopCommands::new(1);
+        let mut quota = test_quota_config(&tempdir);
+        quota.reader.codex_home = Some(codex_home);
+
+        let report = run_loop_core(
+            LoopRunOptions {
+                goal: "goal-cmd".to_string(),
+                worker_cmd: Some("worker-cmd".to_string()),
+                max_turns: 3,
+                max_wall: None,
+                poll: false,
+                learn: false,
+                run_id: "test-quota-warning".to_string(),
+                run_log_dir: tempdir.join("runs"),
+                stop_file: tempdir.join("STOP"),
+                collection: String::new(),
+                track_savings: false,
+                max_remediation_attempts: 0,
+                cancel: CancellationToken::new(),
+                on_progress: None,
+                quota,
+            },
+            Some(&backend),
+            &anchor,
+            &mut commands,
+        )
+        .await
+        .expect("loop should succeed after warning");
+
+        assert_eq!(report.outcome, "success");
+        let log_content = std::fs::read_to_string(&report.run_log_path).unwrap();
+        assert!(log_content.contains(r#""type":"quota-warning""#));
+        assert!(!log_content.contains(r#""type":"quota-checkpoint""#));
+    }
+
+    #[tokio::test]
+    async fn loop_core_writes_continuation_anchor_when_quota_is_high() {
+        let tempdir = TempDir::new("loop-core-quota-checkpoint");
+        let codex_home = tempdir.join("codex");
+        std::fs::create_dir_all(&codex_home).unwrap();
+        std::fs::write(
+            codex_home.join("rate_limits.json"),
+            r#"{
+                "rateLimits": {
+                    "primary": {
+                        "usedPercent": 96.0,
+                        "windowDurationMins": 300,
+                        "resetsAt": 1782864000
+                    },
+                    "secondary": {
+                        "usedPercent": 12.0,
+                        "windowDurationMins": 10080,
+                        "resetsAt": 1783296000
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let backend = FilesBackend::new(tempdir.path());
+        let anchor_store = AnchorAnchorStore::new(tempdir.path());
+        let mut commands = MockLoopCommands::new(999);
+        let mut quota = test_quota_config(&tempdir);
+        quota.reader.codex_home = Some(codex_home);
+        let run_id = "test-quota-checkpoint";
+
+        let report = run_loop_core(
+            LoopRunOptions {
+                goal: "goal-cmd".to_string(),
+                worker_cmd: Some("worker-cmd".to_string()),
+                max_turns: 3,
+                max_wall: None,
+                poll: false,
+                learn: false,
+                run_id: run_id.to_string(),
+                run_log_dir: tempdir.join("runs"),
+                stop_file: tempdir.join("STOP"),
+                collection: String::new(),
+                track_savings: false,
+                max_remediation_attempts: 0,
+                cancel: CancellationToken::new(),
+                on_progress: None,
+                quota,
+            },
+            Some(&backend),
+            &anchor_store,
+            &mut commands,
+        )
+        .await
+        .expect("loop should checkpoint on high quota");
+
+        assert_eq!(report.outcome, "quota-checkpoint");
+        assert_eq!(report.turns, 0);
+        assert!(
+            commands.worker_env.lock().unwrap().is_empty(),
+            "worker should not run after quota brake"
+        );
+
+        let key = crate::quota::quota_session_key(run_id, "goal-cmd");
+        let anchor = anchor_store
+            .get_for_session(&key)
+            .await
+            .expect("anchor read should succeed")
+            .expect("quota anchor should exist");
+        assert_eq!(anchor.current_task, "Loop goal: goal-cmd");
+        assert!(anchor.next_step.contains(QUOTA_CONTINUATION_NOTE));
+        assert!(anchor
+            .last_decisions
+            .iter()
+            .any(|decision| decision == QUOTA_CONTINUATION_NOTE));
+
+        let session = SessionStore::new(Arc::new(backend))
+            .load(&key)
+            .await
+            .expect("session load should succeed")
+            .expect("session checkpoint should exist");
+        let packet = headgate::WorkingContextBundle::resume_packet_from_session(&session)
+            .expect("resume packet should render");
+        assert_eq!(packet["goal"], "Loop goal: goal-cmd");
+        assert!(packet["restored_working_state"]
+            .as_str()
+            .unwrap()
+            .contains(QUOTA_CONTINUATION_NOTE));
     }
 
     // ── Remediation arc tests ─────────────────────────────────────────────────────────────────
@@ -1339,6 +1586,7 @@ mod tests {
                 max_remediation_attempts: 3,
                 cancel: CancellationToken::new(),
                 on_progress: None,
+                quota: test_quota_config(&tempdir),
             },
             Some(&backend),
             &anchor,
@@ -1413,6 +1661,7 @@ mod tests {
                 max_remediation_attempts: 2,
                 cancel: CancellationToken::new(),
                 on_progress: None,
+                quota: test_quota_config(&tempdir),
             },
             Some(&backend),
             &anchor,
@@ -1475,6 +1724,7 @@ mod tests {
                 max_remediation_attempts: 2,
                 cancel: CancellationToken::new(),
                 on_progress: None,
+                quota: test_quota_config(&tempdir),
             },
             Some(&backend),
             &anchor,
@@ -1537,6 +1787,7 @@ mod tests {
                 max_remediation_attempts: 0, // escalation disabled
                 cancel: CancellationToken::new(),
                 on_progress: None,
+                quota: test_quota_config(&tempdir),
             },
             Some(&backend),
             &anchor,
@@ -1579,6 +1830,7 @@ mod tests {
                 max_remediation_attempts: 0,
                 cancel,
                 on_progress: None,
+                quota: test_quota_config(&tempdir),
             },
             Some(&backend),
             &anchor,
@@ -1661,6 +1913,7 @@ mod tests {
                 max_remediation_attempts: 0,
                 cancel,
                 on_progress: None,
+                quota: test_quota_config(&tempdir),
             },
             Some(&backend),
             &anchor,
@@ -1717,6 +1970,7 @@ mod tests {
                 max_remediation_attempts: 0,
                 cancel: CancellationToken::new(),
                 on_progress,
+                quota: test_quota_config(&tempdir),
             },
             Some(&backend),
             &anchor,

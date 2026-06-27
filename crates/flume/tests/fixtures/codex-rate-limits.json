@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: Apache-2.0
+{
+  "plan_type": "pro",
+  "rate_limit": {
+    "primary_window": {
+      "used_percent": 82,
+      "reset_at": 1782864000,
+      "limit_window_seconds": 18000
+    },
+    "secondary_window": {
+      "used_percent": 41,
+      "reset_at": 1783296000,
+      "limit_window_seconds": 604800
+    }
+  }
+}

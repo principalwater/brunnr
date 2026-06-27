@@ -4,6 +4,7 @@
 
 pub mod lane;
 pub mod loop_core;
+pub mod quota;
 
 pub use lane::{
     Lane, LaneBudget, LaneContract, LaneCoordinator, LaneError, LaneSummary, PresenceSnapshot,

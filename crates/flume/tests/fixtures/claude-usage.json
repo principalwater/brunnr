@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: Apache-2.0
+{
+  "five_hour": {
+    "utilization": 77,
+    "resets_at": "2026-06-28T18:00:00Z"
+  },
+  "seven_day": {
+    "utilization": 64,
+    "resets_at": "2026-07-01T00:00:00Z"
+  }
+}
