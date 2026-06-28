@@ -1,11 +1,68 @@
 // SPDX-License-Identifier: Apache-2.0
 {
-  "five_hour": {
-    "utilization": 77,
-    "resets_at": "2026-06-28T18:00:00Z"
+  "version": 2,
+  "lastComputedDate": "2026-03-06",
+  "dailyActivity": [
+    {
+      "date": "2026-01-25",
+      "messageCount": 151,
+      "sessionCount": 5,
+      "toolCallCount": 43
+    }
+  ],
+  "dailyModelTokens": [
+    {
+      "date": "2026-01-25",
+      "tokensByModel": {
+        "claude-opus-4-5-20251101": 44526
+      }
+    }
+  ],
+  "modelUsage": {
+    "claude-opus-4-5-20251101": {
+      "inputTokens": 820,
+      "outputTokens": 115154,
+      "cacheReadInputTokens": 52233726,
+      "cacheCreationInputTokens": 2582554,
+      "webSearchRequests": 0,
+      "costUSD": 0,
+      "contextWindow": 0,
+      "maxOutputTokens": 0
+    },
+    "claude-opus-4-6": {
+      "inputTokens": 22062,
+      "outputTokens": 89606,
+      "cacheReadInputTokens": 162095585,
+      "cacheCreationInputTokens": 5020826,
+      "webSearchRequests": 0,
+      "costUSD": 0,
+      "contextWindow": 0,
+      "maxOutputTokens": 0
+    },
+    "claude-sonnet-4-6": {
+      "inputTokens": 1539,
+      "outputTokens": 63456,
+      "cacheReadInputTokens": 113689041,
+      "cacheCreationInputTokens": 2166496,
+      "webSearchRequests": 0,
+      "costUSD": 0,
+      "contextWindow": 0,
+      "maxOutputTokens": 0
+    }
   },
-  "seven_day": {
-    "utilization": 64,
-    "resets_at": "2026-07-01T00:00:00Z"
-  }
+  "totalSessions": 61,
+  "totalMessages": 12450,
+  "longestSession": {
+    "duration": 1234,
+    "messageCount": 47,
+    "sessionId": "52265",
+    "timestamp": "2026-01-25T20:24:42.421Z"
+  },
+  "firstSessionDate": "2026-01-25T20:24:42.421Z",
+  "hourCounts": {
+    "0": 4,
+    "1": 3,
+    "10": 2
+  },
+  "totalSpeculationTimeSavedMs": 0
 }

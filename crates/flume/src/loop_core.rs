@@ -1372,9 +1372,14 @@ mod tests {
     async fn loop_core_logs_quota_warning_at_threshold() {
         let tempdir = TempDir::new("loop-core-quota-warning");
         let codex_home = tempdir.join("codex");
-        std::fs::create_dir_all(&codex_home).unwrap();
+        let rollout_dir = codex_home
+            .join("sessions")
+            .join("2026")
+            .join("06")
+            .join("28");
+        std::fs::create_dir_all(&rollout_dir).unwrap();
         std::fs::write(
-            codex_home.join("rate_limits.json"),
+            rollout_dir.join("rollout-2026-06-28T14-49-17-warning.jsonl"),
             include_str!("../tests/fixtures/codex-rate-limits.json"),
         )
         .unwrap();
@@ -1419,23 +1424,15 @@ mod tests {
     async fn loop_core_writes_continuation_anchor_when_quota_is_high() {
         let tempdir = TempDir::new("loop-core-quota-checkpoint");
         let codex_home = tempdir.join("codex");
-        std::fs::create_dir_all(&codex_home).unwrap();
+        let rollout_dir = codex_home
+            .join("sessions")
+            .join("2026")
+            .join("06")
+            .join("28");
+        std::fs::create_dir_all(&rollout_dir).unwrap();
         std::fs::write(
-            codex_home.join("rate_limits.json"),
-            r#"{
-                "rateLimits": {
-                    "primary": {
-                        "usedPercent": 96.0,
-                        "windowDurationMins": 300,
-                        "resetsAt": 1782864000
-                    },
-                    "secondary": {
-                        "usedPercent": 12.0,
-                        "windowDurationMins": 10080,
-                        "resetsAt": 1783296000
-                    }
-                }
-            }"#,
+            rollout_dir.join("rollout-2026-06-28T14-49-17-checkpoint.jsonl"),
+            r#"{"timestamp":"2026-06-28T14:49:17.000Z","type":"event_msg","payload":{"rate_limits":{"limit_id":"codex","limit_name":null,"primary":{"used_percent":96.0,"window_minutes":300,"resets_at":1782864000},"secondary":{"used_percent":12.0,"window_minutes":10080,"resets_at":1783296000},"credits":null,"individual_limit":null,"plan_type":"prolite","rate_limit_reached_type":null}}}"#,
         )
         .unwrap();
         let backend = FilesBackend::new(tempdir.path());

@@ -8,7 +8,9 @@
 use std::{
     collections::BTreeMap,
     env, fs,
+    io::{BufRead, BufReader},
     path::{Path, PathBuf},
+    time::SystemTime,
 };
 
 use aquifer::{
@@ -27,6 +29,9 @@ pub const QUOTA_CONTINUATION_NOTE: &str =
 
 const PERCENT_LIMIT: f64 = 100.0;
 const MAX_QUOTA_FILE_BYTES: u64 = 2 * 1024 * 1024;
+const CODEX_SESSIONS_DIR_ENV: &str = "CODEX_SESSIONS_DIR";
+const CODEX_ROLLOUT_SCAN_DEPTH: usize = 8;
+const MAX_CODEX_ROLLOUT_CANDIDATES: usize = 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum QuotaWindow {
@@ -302,6 +307,10 @@ pub async fn write_quota_continuation(
 }
 
 fn read_codex_quota(root: Option<&Path>) -> Vec<QuotaWindowStatus> {
+    if let Some((source, parsed)) = read_codex_transcript_quota(root) {
+        return materialize_agent_windows("codex", Some(source), parsed);
+    }
+
     read_agent_quota(
         "codex",
         root.into_iter().map(Path::to_path_buf).collect(),
@@ -325,15 +334,127 @@ fn read_claude_quota(roots: &[PathBuf]) -> Vec<QuotaWindowStatus> {
         "claude",
         roots.to_vec(),
         &[
+            "stats-cache.json",
             "usage.json",
             "quota.json",
             "rate_limits.json",
             "rate-limits.json",
+            "limits.json",
+            "usage_limits.json",
+            "usage-limits.json",
             "state/usage.json",
             "state/rate_limits.json",
             "stats/usage.json",
         ],
     )
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct CodexRolloutCandidate {
+    path: PathBuf,
+    rollout_key: Option<String>,
+    modified: Option<SystemTime>,
+}
+
+fn read_codex_transcript_quota(root: Option<&Path>) -> Option<(PathBuf, Vec<ParsedWindow>)> {
+    let mut candidates = codex_rollout_candidates(&codex_session_roots(root));
+    candidates.sort_by(|left, right| {
+        right
+            .rollout_key
+            .cmp(&left.rollout_key)
+            .then_with(|| right.modified.cmp(&left.modified))
+            .then_with(|| right.path.cmp(&left.path))
+    });
+
+    for candidate in candidates.into_iter().take(MAX_CODEX_ROLLOUT_CANDIDATES) {
+        if let Ok(Some(parsed)) = parse_codex_rollout_file(&candidate.path) {
+            if parsed.iter().any(|window| window.pct.is_some()) {
+                return Some((candidate.path, parsed));
+            }
+        }
+    }
+    None
+}
+
+fn codex_session_roots(root: Option<&Path>) -> Vec<PathBuf> {
+    let mut roots = env::var_os(CODEX_SESSIONS_DIR_ENV)
+        .map(|value| env::split_paths(&value).collect::<Vec<_>>())
+        .unwrap_or_default();
+
+    if let Some(root) = root {
+        roots.push(root.join("sessions"));
+        roots.push(root.join("archived_sessions"));
+    }
+
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
+fn codex_rollout_candidates(roots: &[PathBuf]) -> Vec<CodexRolloutCandidate> {
+    let mut candidates = Vec::new();
+    for root in roots.iter().filter(|root| root.exists()) {
+        collect_codex_rollout_candidates(root, 0, &mut candidates);
+    }
+    candidates
+}
+
+fn collect_codex_rollout_candidates(
+    root: &Path,
+    depth: usize,
+    candidates: &mut Vec<CodexRolloutCandidate>,
+) {
+    if depth > CODEX_ROLLOUT_SCAN_DEPTH {
+        return;
+    }
+
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+
+        if file_type.is_dir() {
+            collect_codex_rollout_candidates(&path, depth + 1, candidates);
+        } else if file_type.is_file() && is_codex_rollout_file(&path) {
+            candidates.push(CodexRolloutCandidate {
+                rollout_key: codex_rollout_sort_key(&path),
+                path,
+                modified: entry
+                    .metadata()
+                    .and_then(|metadata| metadata.modified())
+                    .ok(),
+            });
+        }
+    }
+}
+
+fn codex_rollout_sort_key(path: &Path) -> Option<String> {
+    let name = path.file_name()?.to_str()?;
+    let timestamp = name.strip_prefix("rollout-")?.get(..19).filter(|value| {
+        value.as_bytes().get(4) == Some(&b'-')
+            && value.as_bytes().get(7) == Some(&b'-')
+            && value.as_bytes().get(10) == Some(&b'T')
+            && value.as_bytes().get(13) == Some(&b'-')
+            && value.as_bytes().get(16) == Some(&b'-')
+    })?;
+    Some(timestamp.to_string())
+}
+
+fn is_codex_rollout_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with("rollout-") && name.ends_with(".jsonl"))
+}
+
+fn parse_codex_rollout_file(path: &Path) -> anyhow::Result<Option<Vec<ParsedWindow>>> {
+    let file = fs::File::open(path)?;
+    let reader = BufReader::new(file);
+    Ok(parse_quota_jsonl(reader))
 }
 
 fn read_agent_quota(
@@ -413,45 +534,90 @@ fn parse_quota_text(agent: &str, raw: &str) -> anyhow::Result<Vec<ParsedWindow>>
             return Ok(parsed);
         }
     }
+    if json_text.contains("\"rate_limits\"") {
+        if let Some(parsed) = parse_quota_jsonl(json_text.as_bytes()) {
+            return Ok(parsed);
+        }
+    }
     Ok(parse_status_text(agent, raw))
 }
 
 fn parse_quota_json(value: &Value) -> Vec<ParsedWindow> {
     let mut parsed = Vec::new();
-    collect_windows(value, None, 0, &mut parsed);
+    collect_windows(value, None, 0, false, &mut parsed);
     parsed
+}
+
+fn parse_quota_jsonl(reader: impl BufRead) -> Option<Vec<ParsedWindow>> {
+    let mut last = None;
+    for line in reader.lines().map_while(Result::ok) {
+        if !line.contains("\"rate_limits\"") {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        let parsed = parse_quota_json(&value);
+        if !parsed.is_empty() {
+            last = Some(parsed);
+        }
+    }
+    last
 }
 
 fn collect_windows(
     value: &Value,
     key_hint: Option<&str>,
     depth: usize,
+    parent_unlimited: bool,
     parsed: &mut Vec<ParsedWindow>,
 ) {
     if depth > 5 {
         return;
     }
-    if let Some(window) = parse_window_object(value, key_hint) {
+    let unlimited = value
+        .as_object()
+        .and_then(|object| object.get("unlimited"))
+        .and_then(bool_value)
+        .unwrap_or(parent_unlimited);
+    if let Some(window) = parse_window_object(value, key_hint, unlimited) {
         parsed.push(window);
     }
     match value {
         Value::Object(object) => {
             for (key, child) in object {
-                collect_windows(child, Some(key), depth + 1, parsed);
+                collect_windows(child, Some(key), depth + 1, unlimited, parsed);
             }
         }
         Value::Array(items) => {
             for item in items {
-                collect_windows(item, key_hint, depth + 1, parsed);
+                collect_windows(item, key_hint, depth + 1, unlimited, parsed);
             }
         }
         _ => {}
     }
 }
 
-fn parse_window_object(value: &Value, key_hint: Option<&str>) -> Option<ParsedWindow> {
+fn parse_window_object(
+    value: &Value,
+    key_hint: Option<&str>,
+    parent_unlimited: bool,
+) -> Option<ParsedWindow> {
     let object = value.as_object()?;
     let window = classify_window(key_hint, value)?;
+    if object
+        .get("unlimited")
+        .and_then(bool_value)
+        .unwrap_or(parent_unlimited)
+    {
+        return Some(ParsedWindow {
+            window,
+            used: Some(0.0),
+            limit: None,
+            pct: Some(0.0),
+            resets_at: reset_datetime(object),
+        });
+    }
     let pct = used_percent(object)?;
     let limit = first_number(
         object,
@@ -637,6 +803,18 @@ fn number_value(value: &Value) -> Option<f64> {
     match value {
         Value::Number(number) => number.as_f64(),
         Value::String(text) => text.trim().replace(',', "").parse::<f64>().ok(),
+        _ => None,
+    }
+}
+
+fn bool_value(value: &Value) -> Option<bool> {
+    match value {
+        Value::Bool(value) => Some(*value),
+        Value::String(text) => match text.trim().to_ascii_lowercase().as_str() {
+            "true" | "yes" | "1" => Some(true),
+            "false" | "no" | "0" => Some(false),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -830,9 +1008,10 @@ fn home_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use artesian_test_support::TempDir;
 
     #[test]
-    fn parses_codexbar_codex_rate_limit_shape() {
+    fn parses_codex_rollout_rate_limit_shape() {
         let parsed = parse_quota_text(
             "codex",
             include_str!("../tests/fixtures/codex-rate-limits.json"),
@@ -852,10 +1031,18 @@ mod tests {
         assert_eq!(five.used, Some(82.0));
         assert_eq!(five.limit, Some(100.0));
         assert_eq!(weekly.pct, Some(41.0));
+        assert_eq!(
+            five.resets_at.map(|value| value.to_rfc3339()),
+            Some("2026-07-01T00:00:00+00:00".to_string())
+        );
+        assert_eq!(
+            weekly.resets_at.map(|value| value.to_rfc3339()),
+            Some("2026-07-06T00:00:00+00:00".to_string())
+        );
     }
 
     #[test]
-    fn parses_codexbar_claude_oauth_shape() {
+    fn claude_stats_cache_without_limit_windows_is_unknown() {
         let parsed = parse_quota_text(
             "claude",
             include_str!("../tests/fixtures/claude-usage.json"),
@@ -870,13 +1057,71 @@ mod tests {
             .iter()
             .find(|status| status.window == "weekly")
             .expect("weekly status");
+        assert_eq!(five.status, QuotaStatusKind::Unknown);
+        assert_eq!(weekly.status, QuotaStatusKind::Unknown);
+        assert_eq!(five.pct, None);
+        assert_eq!(weekly.resets_at, None);
+    }
+
+    #[test]
+    fn reads_codex_quota_from_latest_session_rollout() {
+        let tempdir = TempDir::new("quota-codex-sessions");
+        let codex_home = tempdir.join("codex");
+        let rollout_dir = codex_home
+            .join("sessions")
+            .join("2026")
+            .join("06")
+            .join("28");
+        std::fs::create_dir_all(&rollout_dir).unwrap();
+        let rollout = rollout_dir.join("rollout-2026-06-28T14-49-17-fixture.jsonl");
+        std::fs::write(
+            &rollout,
+            include_str!("../tests/fixtures/codex-rate-limits.json"),
+        )
+        .unwrap();
+
+        let statuses = read_local_quota_with_options(&QuotaReadOptions {
+            codex_home: Some(codex_home),
+            claude_roots: vec![tempdir.join("missing-claude")],
+        });
+        let five = statuses
+            .iter()
+            .find(|status| status.agent == "codex" && status.window == "5h")
+            .expect("5h status");
+        let weekly = statuses
+            .iter()
+            .find(|status| status.agent == "codex" && status.window == "weekly")
+            .expect("weekly status");
+
         assert_eq!(five.status, QuotaStatusKind::Known);
-        assert_eq!(five.pct, Some(77.0));
-        assert_eq!(weekly.pct, Some(64.0));
+        assert_eq!(five.pct, Some(82.0));
+        assert_eq!(weekly.status, QuotaStatusKind::Known);
+        assert_eq!(weekly.pct, Some(41.0));
         assert_eq!(
-            weekly.resets_at.map(|value| value.to_rfc3339()),
+            five.resets_at.map(|value| value.to_rfc3339()),
             Some("2026-07-01T00:00:00+00:00".to_string())
         );
+        assert_eq!(
+            weekly.resets_at.map(|value| value.to_rfc3339()),
+            Some("2026-07-06T00:00:00+00:00".to_string())
+        );
+        assert_eq!(five.source.as_deref(), Some(rollout.as_path()));
+    }
+
+    #[test]
+    fn unlimited_codex_windows_are_known_without_threshold_events() {
+        let parsed = parse_quota_text(
+            "codex",
+            r#"{"timestamp":"2026-06-28T14:49:17.000Z","type":"event_msg","payload":{"rate_limits":{"primary":{"unlimited":true,"window_minutes":300,"resets_at":1782864000},"secondary":{"unlimited":true,"window_minutes":10080,"resets_at":1783296000}}}}"#,
+        )
+        .expect("fixture should parse");
+        let statuses = materialize_agent_windows("codex", None, parsed);
+
+        assert!(statuses
+            .iter()
+            .all(|status| status.status == QuotaStatusKind::Known));
+        assert!(statuses.iter().all(|status| status.pct == Some(0.0)));
+        assert!(quota_threshold_events(&statuses, 1.0, 95.0).is_empty());
     }
 
     #[test]
