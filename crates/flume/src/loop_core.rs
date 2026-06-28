@@ -448,15 +448,34 @@ pub async fn loop_recall(backend: &dyn MemoryBackend, goal: &str) -> String {
     loop_recall_inner(backend, goal).await.0
 }
 
+/// Search the backend for memory relevant to the goal within a project union scope.
+pub async fn loop_recall_for_project(
+    backend: &dyn MemoryBackend,
+    goal: &str,
+    project: &str,
+) -> String {
+    let mut query = MemoryQuery::new(goal).with_limit(LOOP_RECALL_LIMIT * 3);
+    query.project = Some(project.to_string());
+    loop_recall_query(backend, query).await.0
+}
+
 /// Like [`loop_recall`] but also returns `(baseline_tokens, returned_tokens)` for savings
 /// accounting.  `baseline_tokens` is the sum of full record content token counts for each
 /// MMR-selected hit.  `returned_tokens` is the token count of the formatted output (each
 /// record truncated to 280 chars).
 async fn loop_recall_inner(backend: &dyn MemoryBackend, goal: &str) -> (String, usize, usize) {
-    let Ok(hits) = backend
-        .find(MemoryQuery::new(goal).with_limit(LOOP_RECALL_LIMIT * 3))
-        .await
-    else {
+    loop_recall_query(
+        backend,
+        MemoryQuery::new(goal).with_limit(LOOP_RECALL_LIMIT * 3),
+    )
+    .await
+}
+
+async fn loop_recall_query(
+    backend: &dyn MemoryBackend,
+    query: MemoryQuery,
+) -> (String, usize, usize) {
+    let Ok(hits) = backend.find(query).await else {
         return (String::new(), 0, 0);
     };
     let hits = aquifer::mmr_diversify(hits, LOOP_RECALL_LIMIT, aquifer::MMR_DEFAULT_LAMBDA);
@@ -478,9 +497,13 @@ async fn packet_tag_section(
     tag: &str,
     limit: usize,
     title: &str,
+    project: Option<&str>,
 ) -> Option<String> {
     let mut query = MemoryQuery::new(goal).with_limit(limit);
     query.tags = vec![tag.to_string()];
+    if let Some(project) = project {
+        query.project = Some(project.to_string());
+    }
     match backend.find(query).await {
         Ok(hits) if !hits.is_empty() => {
             let lines: Vec<String> = hits
@@ -501,6 +524,27 @@ pub async fn assemble_goal_packet(
     last_check: Option<&str>,
     recall: &str,
 ) -> String {
+    assemble_goal_packet_scoped(backend, goal, last_check, recall, None).await
+}
+
+/// Assemble a bounded goal packet with tagged sections constrained to a project union scope.
+pub async fn assemble_goal_packet_with_project(
+    backend: Option<&dyn MemoryBackend>,
+    goal: &str,
+    last_check: Option<&str>,
+    recall: &str,
+    project: &str,
+) -> String {
+    assemble_goal_packet_scoped(backend, goal, last_check, recall, Some(project)).await
+}
+
+async fn assemble_goal_packet_scoped(
+    backend: Option<&dyn MemoryBackend>,
+    goal: &str,
+    last_check: Option<&str>,
+    recall: &str,
+    project: Option<&str>,
+) -> String {
     let mut sections = vec![format!("# Goal\n{goal}")];
 
     if let Some(backend) = backend {
@@ -510,6 +554,7 @@ pub async fn assemble_goal_packet(
             LOOP_INVARIANT_TAG,
             LOOP_GOAL_INVARIANT_LIMIT,
             "Invariants (must hold)",
+            project,
         )
         .await
         {
@@ -521,6 +566,7 @@ pub async fn assemble_goal_packet(
             LOOP_SKILL_TAG,
             LOOP_GOAL_SKILL_LIMIT,
             "Known approach (verified)",
+            project,
         )
         .await
         {
@@ -532,6 +578,7 @@ pub async fn assemble_goal_packet(
             LOOP_SPEC_TAG,
             LOOP_GOAL_SKILL_LIMIT,
             "Sharper specs (verified)",
+            project,
         )
         .await
         {

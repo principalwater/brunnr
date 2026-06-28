@@ -93,6 +93,7 @@ async fn simulated_compaction_replays_anchor_and_targeted_memory() {
             session_id: None,
             task_id: None,
             user_id: None,
+            project: None,
             source: None,
             confidence: None,
             relations: Vec::new(),

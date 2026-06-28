@@ -4,7 +4,7 @@ use futures_util::{future::BoxFuture, FutureExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::MemoryResult;
+use crate::{MemoryResult, SHARED_PROJECT};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -66,6 +66,34 @@ impl Filter {
         self.must.push(FilterCondition::Eq {
             field: field.into(),
             value: FilterValue::String(value.into()),
+        });
+    }
+
+    pub fn project_union(project: &str) -> Self {
+        let mut filter = Self::default();
+        filter.add_project_union(project);
+        filter
+    }
+
+    pub fn add_project_union(&mut self, project: &str) {
+        let project = project.trim();
+        let project = if project.is_empty() {
+            SHARED_PROJECT
+        } else {
+            project
+        };
+        self.should.push(FilterCondition::Eq {
+            field: "project".to_string(),
+            value: FilterValue::String(project.to_string()),
+        });
+        if project != SHARED_PROJECT {
+            self.should.push(FilterCondition::Eq {
+                field: "project".to_string(),
+                value: FilterValue::String(SHARED_PROJECT.to_string()),
+            });
+        }
+        self.should.push(FilterCondition::Exists {
+            field: "project".to_string(),
         });
     }
 
@@ -250,6 +278,14 @@ pub trait VectorStore: Send + Sync {
         point_id: &str,
     ) -> BoxFuture<'_, MemoryResult<Option<VectorPoint>>>;
 
+    fn distinct_payload_values(
+        &self,
+        _collection: &str,
+        _field: &str,
+    ) -> BoxFuture<'_, MemoryResult<Vec<String>>> {
+        async { Ok(Vec::new()) }.boxed()
+    }
+
     fn capabilities(&self) -> VectorStoreCapabilities;
 }
 
@@ -302,6 +338,14 @@ impl<T: VectorStore + ?Sized> VectorStore for &T {
         (**self).get(collection, point_id)
     }
 
+    fn distinct_payload_values(
+        &self,
+        collection: &str,
+        field: &str,
+    ) -> BoxFuture<'_, MemoryResult<Vec<String>>> {
+        (**self).distinct_payload_values(collection, field)
+    }
+
     fn capabilities(&self) -> VectorStoreCapabilities {
         (**self).capabilities()
     }
@@ -339,7 +383,9 @@ fn payload_matches_condition(payload: &Value, condition: &FilterCondition) -> bo
         FilterCondition::Range(range) => field_value(payload, &range.field)
             .and_then(Value::as_f64)
             .is_some_and(|candidate| range_matches(candidate, range)),
-        FilterCondition::Exists { field } => field_value(payload, field).is_some(),
+        // `Exists` is the historical adapter name for Qdrant's `is_empty` condition in this
+        // filter model. Treat it as the absent/null arm so the Rust backstop matches Qdrant.
+        FilterCondition::Exists { field } => field_value(payload, field).is_none_or(Value::is_null),
     }
 }
 

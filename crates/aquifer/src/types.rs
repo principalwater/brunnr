@@ -9,6 +9,8 @@ use thiserror::Error;
 use crate::Relation;
 
 pub const SKILL_PROCEDURE_METADATA_KEY: &str = "procedure";
+pub const SHARED_PROJECT: &str = "shared";
+pub const UNTAGGED_PROJECT_LABEL: &str = "(untagged)";
 
 // ── OCF-aligned record state ──────────────────────────────────────────────────
 
@@ -133,6 +135,8 @@ pub struct MemoryRecord {
     #[serde(default)]
     pub user_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confidence: Option<f32>,
@@ -175,6 +179,7 @@ impl MemoryRecord {
             session_id: None,
             task_id: None,
             user_id: None,
+            project: None,
             source: None,
             confidence: None,
             relations: Vec::new(),
@@ -208,6 +213,8 @@ pub struct StoreMemory {
     #[serde(default)]
     pub user_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confidence: Option<f32>,
@@ -231,6 +238,7 @@ impl StoreMemory {
             session_id: None,
             task_id: None,
             user_id: None,
+            project: None,
             source: None,
             confidence: None,
             relations: Vec::new(),
@@ -303,6 +311,8 @@ pub struct MemoryQuery {
     pub task_id: Option<String>,
     #[serde(default)]
     pub user_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
     /// When `true`, include `Archived` records in results. Default `false` (exclude archived).
     #[serde(default)]
     pub include_archived: bool,
@@ -320,6 +330,7 @@ impl MemoryQuery {
             session_id: None,
             task_id: None,
             user_id: None,
+            project: None,
             include_archived: false,
         }
     }
@@ -328,6 +339,21 @@ impl MemoryQuery {
         self.limit = limit;
         self
     }
+
+    pub fn with_project(mut self, project: impl Into<String>) -> Self {
+        self.project = normalize_project(project.into());
+        self
+    }
+
+    pub fn effective_project(&self) -> &str {
+        self.project.as_deref().unwrap_or(SHARED_PROJECT)
+    }
+}
+
+pub fn normalize_project(project: impl Into<String>) -> Option<String> {
+    let project = project.into();
+    let project = project.trim();
+    (!project.is_empty()).then(|| project.to_string())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

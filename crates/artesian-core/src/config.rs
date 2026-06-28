@@ -33,6 +33,8 @@ pub struct MemoryConfig {
     pub root: String,
     #[serde(default = "default_memory_collection")]
     pub collection: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
     #[serde(default)]
     pub qdrant_url: Option<String>,
     #[serde(default)]
@@ -394,6 +396,7 @@ impl ArtesianConfig {
                 backend: MemoryBackendKind::Files,
                 root: root.into(),
                 collection: default_memory_collection(),
+                project: None,
                 qdrant_url: None,
                 qdrant_rest_url: None,
                 qdrant_api_key_env: None,

@@ -30,6 +30,7 @@ pub struct ImportOptions {
     pub directory: PathBuf,
     pub okf_root: PathBuf,
     pub user_id: Option<String>,
+    pub project: Option<String>,
     /// Emit per-file progress to stderr (stdout stays reserved for the machine-readable summary).
     pub progress: bool,
 }
@@ -95,13 +96,12 @@ pub async fn import_directory(
             .await;
         } else {
             import_memory_path(
-                &options.directory,
+                &options,
                 path,
                 primary_memory.as_ref(),
                 okf_memory
                     .as_deref()
                     .map(|backend| backend as &dyn MemoryBackend),
-                options.user_id.as_deref(),
                 &mut report,
                 &mut catalog,
             )
@@ -195,11 +195,10 @@ async fn import_task_path(
 const IMPORT_BATCH_SIZE: usize = 256;
 
 async fn import_memory_path(
-    source_root: &Path,
+    options: &ImportOptions,
     path: &Path,
     primary_memory: &dyn MemoryBackend,
     okf_memory: Option<&dyn MemoryBackend>,
-    user_id: Option<&str>,
     report: &mut ImportReport,
     catalog: &mut Vec<CatalogEntry>,
 ) {
@@ -219,7 +218,13 @@ async fn import_memory_path(
 
     let memories: Vec<StoreMemory> = memories
         .into_iter()
-        .map(|memory| with_user(memory, user_id))
+        .map(|memory| {
+            with_user_and_project(
+                memory,
+                options.user_id.as_deref(),
+                options.project.as_deref(),
+            )
+        })
         .collect();
 
     // Mirror to OKF backend first (FilesBackend uses default sequential bulk_store).
@@ -248,19 +253,28 @@ async fn import_memory_path(
 
     catalog.push(CatalogEntry {
         kind: CatalogKind::Memory,
-        path: catalog_path(source_root, path),
+        path: catalog_path(&options.directory, path),
         title,
         chunks: chunk_count,
     });
 }
 
-fn with_user(mut memory: StoreMemory, user_id: Option<&str>) -> StoreMemory {
+fn with_user_and_project(
+    mut memory: StoreMemory,
+    user_id: Option<&str>,
+    project: Option<&str>,
+) -> StoreMemory {
     if let Some(user_id) = user_id {
         if memory.user_id.is_none() {
             memory.user_id = Some(user_id.to_string());
         }
         if memory.scope.is_none() {
             memory.scope = Some(MemoryScope::Shared);
+        }
+    }
+    if let Some(project) = project {
+        if memory.project.is_none() {
+            memory.project = Some(project.to_string());
         }
     }
     memory

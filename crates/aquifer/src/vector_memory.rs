@@ -359,6 +359,7 @@ impl<V: VectorStore> VectorMemoryBackend<V> {
             "session_id",
             "task_id",
             "user_id",
+            "project",
             // Indexed for time-range and recency filtering (datetime index on Qdrant, JSON
             // expression index on SQLite) so temporal decay/supersession need not full-scan.
             "created_at",
@@ -690,6 +691,7 @@ impl<V: VectorStore> VectorMemoryBackend<V> {
                 session_id,
                 task_id,
                 user_id,
+                project,
                 source: provenance_source,
                 confidence,
                 relations,
@@ -724,6 +726,7 @@ impl<V: VectorStore> VectorMemoryBackend<V> {
                     session_id,
                     task_id,
                     user_id,
+                    project,
                     source: provenance_source,
                     confidence,
                     relations,
@@ -1069,6 +1072,7 @@ impl<V: VectorStore> MemoryBackend for VectorMemoryBackend<V> {
                     session_id: memory.session_id.clone(),
                     task_id: memory.task_id.clone(),
                     user_id: memory.user_id.clone(),
+                    project: memory.project.clone(),
                     source: memory.source.clone(),
                     confidence: memory.confidence,
                     relations: Vec::new(),
@@ -1106,6 +1110,7 @@ impl<V: VectorStore> MemoryBackend for VectorMemoryBackend<V> {
                     session_id: memory.session_id.clone(),
                     task_id: memory.task_id.clone(),
                     user_id: memory.user_id.clone(),
+                    project: memory.project.clone(),
                     source: memory.source.clone(),
                     confidence: memory.confidence,
                     relations,
@@ -1246,6 +1251,16 @@ impl<V: VectorStore> MemoryBackend for VectorMemoryBackend<V> {
         .boxed()
     }
 
+    fn projects(&self) -> BoxFuture<'_, MemoryResult<Vec<String>>> {
+        async move {
+            self.ensure_ready().await?;
+            self.store
+                .distinct_payload_values(&self.config.collection, "project")
+                .await
+        }
+        .boxed()
+    }
+
     /// Bulk-store many memories, skipping the per-chunk existence round-trip. Content-hash IDs make
     /// upsert idempotent, so re-importing identical content is safe — the `skipped` count is
     /// tracked via a single up-front bulk ID scan so import callers can report duplicate counts.
@@ -1337,6 +1352,7 @@ impl<V: VectorStore> MemoryBackend for VectorMemoryBackend<V> {
                         session_id: memory.session_id.clone(),
                         task_id: memory.task_id.clone(),
                         user_id: memory.user_id.clone(),
+                        project: memory.project.clone(),
                         source: memory.source.clone(),
                         confidence: memory.confidence,
                         relations: Vec::new(),
@@ -1365,6 +1381,7 @@ impl<V: VectorStore> MemoryBackend for VectorMemoryBackend<V> {
                         session_id: memory.session_id.clone(),
                         task_id: memory.task_id.clone(),
                         user_id: memory.user_id.clone(),
+                        project: memory.project.clone(),
                         source: memory.source.clone(),
                         confidence: memory.confidence,
                         relations,
@@ -1458,6 +1475,7 @@ fn reconstruct_parent_record(parent_node: &str, siblings: Vec<MemoryRecord>) -> 
         session_id: first.session_id.clone(),
         task_id: first.task_id.clone(),
         user_id: first.user_id.clone(),
+        project: first.project.clone(),
         source: first.source.clone(),
         confidence: first.confidence,
         relations: first.relations.clone(),
@@ -1486,6 +1504,8 @@ struct MemoryPayload {
     task_id: Option<String>,
     #[serde(default)]
     user_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    project: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1536,6 +1556,7 @@ impl From<&MemoryRecord> for MemoryPayload {
             session_id: record.session_id.clone(),
             task_id: record.task_id.clone(),
             user_id: record.user_id.clone(),
+            project: record.project.clone(),
             source: record.source.clone(),
             confidence: record.confidence,
             relations: record.relations.clone(),
@@ -1561,6 +1582,7 @@ impl From<MemoryPayload> for MemoryRecord {
             session_id: payload.session_id,
             task_id: payload.task_id,
             user_id: payload.user_id,
+            project: payload.project,
             source: payload.source,
             confidence: payload.confidence,
             relations: payload.relations,
@@ -1600,6 +1622,7 @@ fn filter_from_query(query: &MemoryQuery) -> Filter {
     for tag in &query.tags {
         filter.must_eq("tags", tag);
     }
+    filter.add_project_union(query.effective_project());
     filter
 }
 

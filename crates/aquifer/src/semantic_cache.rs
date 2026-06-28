@@ -199,6 +199,7 @@ fn is_cacheable(query: &MemoryQuery) -> bool {
         && query.session_id.is_none()
         && query.task_id.is_none()
         && query.user_id.is_none()
+        && query.project.is_none()
         && query.tags.is_empty()
 }
 
@@ -243,6 +244,10 @@ impl<B: MemoryBackend, V: QueryVectorizer> MemoryBackend for CachingMemoryBacken
 
     fn by_entity(&self, entity: &str) -> BoxFuture<'_, MemoryResult<Vec<MemoryRecord>>> {
         self.inner.by_entity(entity)
+    }
+
+    fn projects(&self) -> BoxFuture<'_, MemoryResult<Vec<String>>> {
+        self.inner.projects()
     }
 }
 

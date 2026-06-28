@@ -83,6 +83,10 @@ pub trait MemoryBackend: Send + Sync {
         async { Ok(Vec::new()) }.boxed()
     }
 
+    fn projects(&self) -> BoxFuture<'_, MemoryResult<Vec<String>>> {
+        async { Ok(Vec::new()) }.boxed()
+    }
+
     /// Store many memories in bulk. The default implementation is a sequential loop over
     /// `store()`, which is correct for all backends. Backends that support batch upsert (e.g.
     /// `VectorMemoryBackend<QdrantVectorStore>`) override this to batch the upserts and skip the
@@ -136,6 +140,10 @@ impl MemoryBackend for std::sync::Arc<dyn MemoryBackend> {
 
     fn by_entity(&self, entity: &str) -> BoxFuture<'_, MemoryResult<Vec<MemoryRecord>>> {
         (**self).by_entity(entity)
+    }
+
+    fn projects(&self) -> BoxFuture<'_, MemoryResult<Vec<String>>> {
+        (**self).projects()
     }
 
     fn bulk_store<'a>(

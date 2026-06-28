@@ -414,6 +414,7 @@ mod tests {
             backend: MemoryBackendKind::SqliteVec,
             root: ".artesian".to_string(),
             collection: "artesian-memory".to_string(),
+            project: None,
             qdrant_url: None,
             qdrant_rest_url: None,
             qdrant_api_key_env: None,

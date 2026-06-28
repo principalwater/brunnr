@@ -53,6 +53,7 @@ impl VectorTaskStore {
                 session_id: None,
                 task_id: Some(task.id.clone()),
                 user_id: None,
+                project: None,
                 source: None,
                 confidence: None,
                 relations: Vec::new(),

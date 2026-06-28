@@ -40,6 +40,7 @@ async fn sigterm_to_orchestrator_kills_tracked_worker_process_group() {
             backend: MemoryBackendKind::Files,
             root: memory_root.display().to_string(),
             collection: "process-shutdown".to_string(),
+            project: None,
             qdrant_url: None,
             qdrant_rest_url: None,
             qdrant_api_key_env: None,

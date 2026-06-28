@@ -278,6 +278,37 @@ impl VectorStore for PgVectorStore {
         .boxed()
     }
 
+    fn distinct_payload_values(
+        &self,
+        collection: &str,
+        field: &str,
+    ) -> BoxFuture<'_, MemoryResult<Vec<String>>> {
+        let collection = collection.to_string();
+        let field = field.to_string();
+        async move {
+            if !is_safe_field_path(&field) {
+                return Ok(Vec::new());
+            }
+            let (records, _) = collection_names(&collection);
+            let path = field.split('.').collect::<Vec<_>>().join(",");
+            let rows = self
+                .client
+                .query(
+                    &format!(
+                        "SELECT DISTINCT payload #>> '{{{path}}}' AS value
+                         FROM {records}
+                         WHERE payload #>> '{{{path}}}' IS NOT NULL
+                         ORDER BY value"
+                    ),
+                    &[],
+                )
+                .await
+                .map_err(|e| MemoryError::Database(e.to_string()))?;
+            Ok(rows.iter().map(|row| row.get::<_, String>(0)).collect())
+        }
+        .boxed()
+    }
+
     fn capabilities(&self) -> VectorStoreCapabilities {
         VectorStoreCapabilities {
             supports_server_side_hybrid: false,

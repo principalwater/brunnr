@@ -566,6 +566,7 @@ async fn dispatch_task(
             session_id: Some(session.id.clone()),
             task_id: Some(task.id.clone()),
             user_id: None,
+            project: None,
             source: None,
             confidence: None,
             relations: Vec::new(),

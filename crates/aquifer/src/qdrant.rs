@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::Path;
 use std::{collections::HashMap, time::Duration};
 
@@ -484,6 +484,42 @@ impl VectorStore for QdrantVectorStore {
         .boxed()
     }
 
+    fn distinct_payload_values(
+        &self,
+        collection: &str,
+        field: &str,
+    ) -> BoxFuture<'_, MemoryResult<Vec<String>>> {
+        let collection = collection.to_string();
+        let field = field.to_string();
+        async move {
+            let mut values = BTreeSet::new();
+            let mut offset: Option<PointId> = None;
+            loop {
+                let mut builder = ScrollPointsBuilder::new(&collection)
+                    .limit(256)
+                    .with_payload(true)
+                    .with_vectors(false);
+                if let Some(off) = offset.clone() {
+                    builder = builder.offset(off);
+                }
+                let response = self.client.scroll(builder).await.map_err(qdrant_error)?;
+                let next = response.next_page_offset.clone();
+                for point in response.result {
+                    let point = retrieved_point_to_point(point)?;
+                    if let Some(value) = json_field_string(&point.payload, &field) {
+                        values.insert(value.to_string());
+                    }
+                }
+                match next {
+                    Some(next_offset) => offset = Some(next_offset),
+                    None => break,
+                }
+            }
+            Ok(values.into_iter().collect())
+        }
+        .boxed()
+    }
+
     fn capabilities(&self) -> VectorStoreCapabilities {
         VectorStoreCapabilities {
             supports_server_side_hybrid: false,
@@ -717,6 +753,7 @@ pub async fn replicate_collection_incremental(
 fn payload_index_field_type(field: &str) -> FieldType {
     match field {
         "content" => FieldType::Text,
+        "project" => FieldType::Keyword,
         "created_at" | "updated_at" | "committed_at" => FieldType::Datetime,
         "tokens" | "token_count" => FieldType::Integer,
         _ => FieldType::Keyword,
@@ -1018,6 +1055,14 @@ fn payload_id(payload: &JsonValue) -> String {
         .and_then(JsonValue::as_str)
         .unwrap_or_default()
         .to_string()
+}
+
+fn json_field_string<'a>(payload: &'a JsonValue, field: &str) -> Option<&'a str> {
+    let mut value = payload;
+    for part in field.split('.') {
+        value = value.get(part)?;
+    }
+    value.as_str()
 }
 
 fn strip_score(mut point: VectorPoint) -> VectorPoint {

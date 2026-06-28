@@ -382,6 +382,104 @@ async fn sqlite_vec_backend_round_trips_source_and_confidence() {
     assert_provenance_round_trip(&backend).await;
 }
 
+#[tokio::test]
+async fn files_backend_project_union_prevents_cross_project_leaks() {
+    let tempdir = TempDir::new("files-project-union");
+    assert_project_union_recall(&FilesBackend::new(tempdir.path())).await;
+}
+
+#[tokio::test]
+async fn sqlite_vec_backend_project_union_prevents_cross_project_leaks() {
+    let store = SqliteVecVectorStore::in_memory().expect("sqlite-vec store should open");
+    let backend = VectorMemoryBackend::with_embedder(
+        store,
+        VectorMemoryConfig {
+            collection: "project-union".to_string(),
+            dimensions: TEST_DIMENSIONS,
+            ..VectorMemoryConfig::new("project-union")
+        },
+        Arc::new(TestEmbedder),
+    )
+    .expect("backend should construct");
+    assert_project_union_recall(&backend).await;
+}
+
+async fn assert_project_union_recall<B: MemoryBackend>(backend: &B) {
+    for (node, project) in [
+        ("node:project-a", Some("A")),
+        ("node:project-shared", Some("shared")),
+        ("node:project-b", Some("B")),
+        ("node:project-untagged", None),
+    ] {
+        let mut memory = StoreMemory::atom(format!("partition sentinel {node}"));
+        memory.node_id = Some(node.to_string());
+        memory.project = project.map(str::to_string);
+        backend.store(memory).await.expect("project store succeeds");
+    }
+
+    let mut query_a = MemoryQuery::new("partition sentinel").with_limit(10);
+    query_a.project = Some("A".to_string());
+    let hits_a = backend.find(query_a).await.expect("project A recall");
+    let nodes_a = hit_nodes(&hits_a);
+    assert!(
+        nodes_a.contains(&"node:project-a".to_string()),
+        "{nodes_a:?}"
+    );
+    assert!(
+        nodes_a.contains(&"node:project-shared".to_string()),
+        "{nodes_a:?}"
+    );
+    assert!(
+        nodes_a.contains(&"node:project-untagged".to_string()),
+        "{nodes_a:?}"
+    );
+    assert!(
+        !nodes_a.contains(&"node:project-b".to_string()),
+        "cross-project leak into A recall: {nodes_a:?}"
+    );
+
+    let mut query_b = MemoryQuery::new("partition sentinel").with_limit(10);
+    query_b.project = Some("B".to_string());
+    let hits_b = backend.find(query_b).await.expect("project B recall");
+    let nodes_b = hit_nodes(&hits_b);
+    assert!(
+        nodes_b.contains(&"node:project-b".to_string()),
+        "{nodes_b:?}"
+    );
+    assert!(
+        !nodes_b.contains(&"node:project-a".to_string()),
+        "cross-project leak into B recall: {nodes_b:?}"
+    );
+
+    let default_hits = backend
+        .find(MemoryQuery::new("partition sentinel").with_limit(10))
+        .await
+        .expect("default project recall");
+    let default_nodes = hit_nodes(&default_hits);
+    assert!(
+        default_nodes.contains(&"node:project-shared".to_string()),
+        "{default_nodes:?}"
+    );
+    assert!(
+        default_nodes.contains(&"node:project-untagged".to_string()),
+        "{default_nodes:?}"
+    );
+    assert!(
+        !default_nodes.contains(&"node:project-a".to_string())
+            && !default_nodes.contains(&"node:project-b".to_string()),
+        "unset project fell back to whole-collection recall: {default_nodes:?}"
+    );
+
+    let projects = backend.projects().await.expect("project discovery");
+    assert!(projects.contains(&"A".to_string()), "{projects:?}");
+    assert!(projects.contains(&"B".to_string()), "{projects:?}");
+    assert!(projects.contains(&"shared".to_string()), "{projects:?}");
+}
+
+fn hit_nodes(hits: &[SearchHit]) -> Vec<String> {
+    hits.iter().map(|hit| hit.record.node_id.clone()).collect()
+}
+
 async fn assert_provenance_round_trip<B: MemoryBackend>(backend: &B) {
     let stored = backend
         .store(StoreMemory {
@@ -396,6 +494,7 @@ async fn assert_provenance_round_trip<B: MemoryBackend>(backend: &B) {
             session_id: None,
             task_id: None,
             user_id: None,
+            project: None,
             source: Some("docs/provenance.md".to_string()),
             confidence: Some(0.82),
             relations: Vec::new(),
@@ -477,6 +576,7 @@ async fn vector_collections_isolate_two_projects_on_one_store() {
             session_id: None,
             task_id: None,
             user_id: Some("user-a".to_string()),
+            project: None,
             source: None,
             confidence: None,
             relations: Vec::new(),
@@ -496,6 +596,7 @@ async fn vector_collections_isolate_two_projects_on_one_store() {
             session_id: None,
             task_id: None,
             user_id: Some("user-b".to_string()),
+            project: None,
             source: None,
             confidence: None,
             relations: Vec::new(),
@@ -532,6 +633,7 @@ async fn assert_backend_contract<B: MemoryBackend>(backend: &B) {
             session_id: None,
             task_id: None,
             user_id: None,
+            project: None,
             source: None,
             confidence: None,
             relations: Vec::new(),
@@ -552,6 +654,7 @@ async fn assert_backend_contract<B: MemoryBackend>(backend: &B) {
             session_id: None,
             task_id: None,
             user_id: None,
+            project: None,
             source: None,
             confidence: None,
             relations: Vec::new(),
@@ -602,6 +705,7 @@ async fn assert_backend_contract<B: MemoryBackend>(backend: &B) {
             session_id: None,
             task_id: Some("task-a".to_string()),
             user_id: None,
+            project: None,
             source: None,
             confidence: None,
             relations: Vec::new(),
@@ -621,6 +725,7 @@ async fn assert_backend_contract<B: MemoryBackend>(backend: &B) {
             session_id: None,
             task_id: Some("task-b".to_string()),
             user_id: None,
+            project: None,
             source: None,
             confidence: None,
             relations: Vec::new(),
@@ -707,6 +812,7 @@ async fn large_content_is_chunked_so_recall_stays_bounded() {
             session_id: None,
             task_id: None,
             user_id: None,
+            project: None,
             source: None,
             confidence: None,
             relations: Vec::new(),
@@ -808,6 +914,7 @@ async fn single_chunk_records_are_unaffected_by_small_to_big() {
                 session_id: None,
                 task_id: None,
                 user_id: None,
+                project: None,
                 source: None,
                 confidence: None,
                 relations: Vec::new(),

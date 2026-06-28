@@ -14,11 +14,12 @@ use std::{
 use std::env;
 
 use aquifer::{
-    insert_skill_procedure_metadata, skill_procedure_from_metadata, AnchorAnchorStore,
-    FilesBackend, MemoryBackend, MemoryQuery, MemoryRecord, MemoryScope, MemoryTier, ProcedureStep,
-    Relation, SearchHit, SessionAnchor, SessionKey, SessionStore, SessionSummary,
-    SqliteVecVectorStore, SqliteVecVectorStoreConfig, StoreMemory, VectorMemoryBackend,
-    VectorMemoryConfig, SESSION_RECORD_TAG, SKILL_PROCEDURE_METADATA_KEY,
+    insert_skill_procedure_metadata, normalize_project, skill_procedure_from_metadata,
+    AnchorAnchorStore, FilesBackend, MemoryBackend, MemoryQuery, MemoryRecord, MemoryScope,
+    MemoryTier, ProcedureStep, Relation, SearchHit, SessionAnchor, SessionKey, SessionStore,
+    SessionSummary, SqliteVecVectorStore, SqliteVecVectorStoreConfig, StoreMemory,
+    VectorMemoryBackend, VectorMemoryConfig, SESSION_RECORD_TAG, SHARED_PROJECT,
+    SKILL_PROCEDURE_METADATA_KEY, UNTAGGED_PROJECT_LABEL,
 };
 use artesian_core::{
     AccConfig, Agent, AgentBinding, AgentCatalog, AgentMessage, ArtesianConfig, MemoryBackendKind,
@@ -112,6 +113,8 @@ pub struct MemoryServer {
     tool_router: ToolRouter<Self>,
     /// Collection name passed to token-savings entries.
     collection: String,
+    /// Default project partition applied when a memory tool request omits `project`.
+    project: Option<String>,
     /// Mirror of `config.memory.track_savings`.
     track_savings: bool,
 }
@@ -210,6 +213,7 @@ impl MemoryServer {
             acc: AccConfig::default(),
             tool_router: Self::mode_tool_router(Mode::Memory),
             collection: String::new(),
+            project: None,
             track_savings: true,
         }
     }
@@ -242,6 +246,7 @@ impl MemoryServer {
         )));
         self.tool_router = Self::mode_tool_router(config.mode);
         self.collection = config.memory.collection.clone();
+        self.project = config.memory.project.clone();
         self.track_savings = config.memory.track_savings;
         self
     }
@@ -316,6 +321,7 @@ impl MemoryServer {
         )
         .with_okf_root(Some(PathBuf::from(&config.root)));
         server.collection = config.collection.clone();
+        server.project = config.project.clone();
         server.track_savings = config.track_savings;
         Ok(server)
     }
@@ -452,11 +458,27 @@ pub struct FindRequest {
     pub session_id: Option<String>,
     pub task_id: Option<String>,
     pub user_id: Option<String>,
+    pub project: Option<String>,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct FindResponse {
     pub hits: Vec<FindHit>,
+    pub scope_applied: ScopeApplied,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct ScopeApplied {
+    pub project: String,
+    pub union: Vec<String>,
+    pub user_id: Option<String>,
+    pub collection: String,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct ProjectsResponse {
+    pub collection: String,
+    pub projects: Vec<String>,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -496,6 +518,7 @@ pub struct ContextRequest {
     pub session_id: Option<String>,
     pub task_id: Option<String>,
     pub user_id: Option<String>,
+    pub project: Option<String>,
     /// When set, also return the project invariants relevant to this goal (memories tagged
     /// `invariant`), so the caller can assemble a goal-scoped packet rather than a flat dump.
     pub goal: Option<String>,
@@ -505,6 +528,7 @@ pub struct ContextRequest {
 pub struct ContextResponse {
     pub index: Option<String>,
     pub hits: Vec<FindHit>,
+    pub scope_applied: ScopeApplied,
     /// Invariants relevant to `goal` (empty unless `goal` was provided).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub invariants: Vec<FindHit>,
@@ -577,6 +601,7 @@ pub struct StoreRequest {
     pub session_id: Option<String>,
     pub task_id: Option<String>,
     pub user_id: Option<String>,
+    pub project: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -1200,6 +1225,35 @@ fn validate_confidence(confidence: Option<f32>) -> Result<Option<f32>, ErrorData
         }
     }
     Ok(confidence)
+}
+
+fn effective_project(requested: Option<String>, configured: Option<&str>) -> String {
+    requested
+        .and_then(normalize_project)
+        .or_else(|| configured.and_then(normalize_project))
+        .unwrap_or_else(|| SHARED_PROJECT.to_string())
+}
+
+fn apply_project_scope(query: &mut MemoryQuery, project: &str) {
+    query.project = Some(project.to_string());
+}
+
+fn scope_applied(project: &str, user_id: Option<String>, collection: &str) -> ScopeApplied {
+    ScopeApplied {
+        project: project.to_string(),
+        union: project_union_labels(project),
+        user_id,
+        collection: collection.to_string(),
+    }
+}
+
+fn project_union_labels(project: &str) -> Vec<String> {
+    let mut labels = vec![project.to_string()];
+    if project != SHARED_PROJECT {
+        labels.push(SHARED_PROJECT.to_string());
+    }
+    labels.push(UNTAGGED_PROJECT_LABEL.to_string());
+    labels
 }
 
 fn find_hit(hit: SearchHit) -> FindHit {
@@ -2191,7 +2245,10 @@ impl MemoryServer {
         query.agent_id = request.agent_id;
         query.session_id = request.session_id;
         query.task_id = request.task_id;
+        let user_id_for_scope = request.user_id.clone();
         query.user_id = request.user_id;
+        let project = effective_project(request.project, self.project.as_deref());
+        apply_project_scope(&mut query, &project);
         let mut hits = self
             .backend
             .find(query)
@@ -2216,7 +2273,26 @@ impl MemoryServer {
             baseline_tokens,
             self.track_savings,
         );
-        Ok(Json(FindResponse { hits }))
+        Ok(Json(FindResponse {
+            hits,
+            scope_applied: scope_applied(&project, user_id_for_scope, &self.collection),
+        }))
+    }
+
+    #[tool(
+        name = "memory.projects",
+        description = "List distinct project partition values present in the memory collection."
+    )]
+    pub async fn memory_projects(&self) -> Result<Json<ProjectsResponse>, ErrorData> {
+        let projects = self
+            .backend
+            .projects()
+            .await
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        Ok(Json(ProjectsResponse {
+            collection: self.collection.clone(),
+            projects,
+        }))
     }
 
     #[tool(
@@ -2288,7 +2364,10 @@ impl MemoryServer {
         query.agent_id = request.agent_id;
         query.session_id = request.session_id;
         query.task_id = request.task_id;
+        let user_id_for_scope = request.user_id.clone();
         query.user_id = request.user_id;
+        let project = effective_project(request.project, self.project.as_deref());
+        apply_project_scope(&mut query, &project);
         let mut hits = self
             .backend
             .find(query)
@@ -2319,6 +2398,7 @@ impl MemoryServer {
         if let Some(goal) = request.goal {
             let mut invariant_query = MemoryQuery::new(goal).with_limit(8);
             invariant_query.tags = vec!["invariant".to_string()];
+            apply_project_scope(&mut invariant_query, &project);
             invariants = self
                 .backend
                 .find(invariant_query)
@@ -2331,6 +2411,7 @@ impl MemoryServer {
         Ok(Json(ContextResponse {
             index,
             hits,
+            scope_applied: scope_applied(&project, user_id_for_scope, &self.collection),
             invariants,
         }))
     }
@@ -2358,6 +2439,7 @@ impl MemoryServer {
                 session_id: request.session_id,
                 task_id: request.task_id,
                 user_id: request.user_id,
+                project: Some(effective_project(request.project, self.project.as_deref())),
                 source: request.source,
                 confidence,
                 relations: request
@@ -3050,6 +3132,7 @@ Call when the project vision or current phase changes."
                 session_id: None,
                 task_id: None,
                 user_id: None,
+                project: None,
                 source: None,
                 confidence: None,
                 relations: Vec::new(),
@@ -4205,6 +4288,7 @@ Optional procedure steps enable guarded replay without per-step model calls."
                 session_id: None,
                 task_id: None,
                 user_id: None,
+                project: None,
                 source,
                 confidence: None,
                 relations: Vec::new(),
@@ -5027,6 +5111,7 @@ mod tests {
             backend: MemoryBackendKind::SqliteVec,
             root: ".artesian".to_string(),
             collection: "artesian-memory".to_string(),
+            project: None,
             qdrant_url: None,
             qdrant_rest_url: None,
             qdrant_api_key_env: None,

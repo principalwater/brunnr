@@ -72,7 +72,7 @@ pub struct Event {
 ///     tier: MemoryTier::L1Atom,
 ///     created_at: Utc::now() - ChronoDuration::days(days_old),
 ///     scope: None, agent_id: None, session_id: None, task_id: None,
-///     user_id: None, source: None, confidence: None, relations: Vec::new(),
+///     user_id: None, project: None, source: None, confidence: None, relations: Vec::new(),
 ///     last_access: None, access_count: 0, state: MemoryState::Active,
 /// };
 /// let records = vec![
@@ -262,6 +262,7 @@ mod tests {
             session_id: None,
             task_id: None,
             user_id: None,
+            project: None,
             source: None,
             confidence: None,
             relations: Vec::new(),

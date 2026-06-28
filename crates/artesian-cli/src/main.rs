@@ -16,11 +16,12 @@ use std::{
 use anyhow::{bail, Context, Result};
 use aquifer::{
     append_eviction_log, consolidation_pass, default_migration_collection, entity_timeline, evict,
-    export_okf_bundle, insert_skill_procedure_metadata, recover_after_compaction,
-    verify_okf_bundle, AnchorAnchorStore, CollectionCompat, ConsolidationOptions, DecayConfig,
-    EvictionPolicy, MemoryBackend, MemoryQuery, MemoryRecord, MemoryScope, MemoryState, MemoryTier,
-    MigrationPlan, ProcedureStep, SearchHit, SessionAnchor, SessionKey, SessionListFilter,
-    SessionStore, StoreMemory, VectorMemoryConfig,
+    export_okf_bundle, insert_skill_procedure_metadata, normalize_project,
+    recover_after_compaction, verify_okf_bundle, AnchorAnchorStore, CollectionCompat,
+    ConsolidationOptions, DecayConfig, EvictionPolicy, MemoryBackend, MemoryQuery, MemoryRecord,
+    MemoryScope, MemoryState, MemoryTier, MigrationPlan, ProcedureStep, SearchHit, SessionAnchor,
+    SessionKey, SessionListFilter, SessionStore, StoreMemory, VectorMemoryConfig, SHARED_PROJECT,
+    UNTAGGED_PROJECT_LABEL,
 };
 use artesian_core::{
     Agent, AgentBinding, ArtesianConfig, MemoryBackendKind, MemoryConfig, Mode, Role, SpawnRequest,
@@ -35,9 +36,9 @@ use artesian_process_agent::{
 };
 use clap::{Parser, Subcommand, ValueEnum};
 use flume::loop_core::{
-    assemble_goal_packet, loop_recall, loop_run_id, loop_run_log_dir, loop_stop_file,
-    run_loop_core, stable_content_hash, LoopCommandFuture, LoopCommands, LoopRunOptions,
-    LOOP_SKILL_TAG,
+    assemble_goal_packet_with_project, loop_recall_for_project, loop_run_id, loop_run_log_dir,
+    loop_stop_file, run_loop_core, stable_content_hash, LoopCommandFuture, LoopCommands,
+    LoopRunOptions, LOOP_SKILL_TAG,
 };
 use flume::quota::{read_local_quota, QuotaLoopConfig, QuotaStatusKind};
 use flume::{
@@ -242,6 +243,15 @@ enum Command {
         #[command(subcommand)]
         command: TeamCommand,
     },
+    /// List distinct project partition values present in the configured memory collection.
+    Projects {
+        #[arg(long, default_value = DEFAULT_CONFIG)]
+        config: PathBuf,
+        #[arg(long, default_value = ".artesian")]
+        root: PathBuf,
+        #[arg(long, value_enum)]
+        backend: Option<BackendArg>,
+    },
     Backfill {
         directory: PathBuf,
         #[arg(long, default_value = DEFAULT_CONFIG)]
@@ -252,6 +262,8 @@ enum Command {
         backend: Option<BackendArg>,
         #[arg(long)]
         user_id: Option<String>,
+        #[arg(long)]
+        project: Option<String>,
         /// Disable deterministic entity-relation extraction during import.
         /// By default, import extracts `mentions` relations from each chunk's content and tags
         /// (no LLM required), so `neighbors` and `by_entity` return links immediately.
@@ -846,6 +858,8 @@ enum MemoryCommand {
         task_id: Option<String>,
         #[arg(long)]
         user_id: Option<String>,
+        #[arg(long)]
+        project: Option<String>,
         #[arg(long, default_value = DEFAULT_CONFIG)]
         config: PathBuf,
         #[arg(long, default_value = ".artesian")]
@@ -880,6 +894,8 @@ enum MemoryCommand {
         task_id: Option<String>,
         #[arg(long)]
         user_id: Option<String>,
+        #[arg(long)]
+        project: Option<String>,
         /// Expand results one hop through explicit entity-relation links.
         #[arg(long)]
         expand: bool,
@@ -913,6 +929,8 @@ enum MemoryCommand {
         /// Expand memory hits one hop through explicit entity-relation links.
         #[arg(long)]
         expand: bool,
+        #[arg(long)]
+        project: Option<String>,
         #[arg(long, default_value = DEFAULT_CONFIG)]
         config: PathBuf,
         #[arg(long, default_value = ".artesian")]
@@ -1340,12 +1358,18 @@ async fn main() -> Result<()> {
         Command::Session { command } => session(command).await,
         Command::Task { command } => task(command).await,
         Command::Team { command } => team(command).await,
+        Command::Projects {
+            config,
+            root,
+            backend,
+        } => projects(config, root, backend).await,
         Command::Backfill {
             directory,
             config,
             root,
             backend,
             user_id,
+            project,
             no_link,
             consolidate,
         } => {
@@ -1354,9 +1378,12 @@ async fn main() -> Result<()> {
                 config,
                 root,
                 backend,
-                user_id,
-                no_link,
-                consolidate,
+                BackfillRunOptions {
+                    user_id,
+                    project,
+                    no_link,
+                    run_consolidate: consolidate,
+                },
             )
             .await
         }
@@ -2388,6 +2415,7 @@ async fn init(options: InitOptions, _non_interactive: bool) -> Result<()> {
             backend: options.backend.into(),
             root: options.memory_root.display().to_string(),
             collection: options.collection,
+            project: options.project.clone(),
             qdrant_url: options.qdrant_url,
             qdrant_rest_url: options.qdrant_rest_url,
             qdrant_api_key_env: Some(options.qdrant_api_key_env),
@@ -2894,11 +2922,14 @@ async fn memory(command: MemoryCommand, raw_args: &[OsString]) -> Result<()> {
             session_id,
             task_id,
             user_id,
+            project,
             config,
             root,
             backend,
         } => {
-            let backend = open_backend_for_command(&config, root, backend)?;
+            let memory_config = memory_config_for_command(&config, root, backend)?;
+            let project = effective_project(project, &memory_config);
+            let backend = open_memory_backend(&memory_config)?;
             let record = backend
                 .store(StoreMemory {
                     content,
@@ -2912,6 +2943,7 @@ async fn memory(command: MemoryCommand, raw_args: &[OsString]) -> Result<()> {
                     session_id,
                     task_id,
                     user_id,
+                    project: Some(project),
                     source,
                     confidence,
                     relations: Vec::new(),
@@ -2943,6 +2975,7 @@ async fn memory(command: MemoryCommand, raw_args: &[OsString]) -> Result<()> {
             session_id,
             task_id,
             user_id,
+            project,
             expand,
             mmr,
             mmr_lambda,
@@ -2968,7 +3001,10 @@ async fn memory(command: MemoryCommand, raw_args: &[OsString]) -> Result<()> {
             memory_query.agent_id = agent_id;
             memory_query.session_id = session_id;
             memory_query.task_id = task_id;
+            let user_id_for_scope = user_id.clone();
             memory_query.user_id = user_id;
+            let project = effective_project(project, &memory_config);
+            apply_project_scope(&mut memory_query, &project);
             memory_query.include_archived = include_archived;
             let mut hits = backend.find(memory_query).await?;
             if diversify {
@@ -2991,6 +3027,15 @@ async fn memory(command: MemoryCommand, raw_args: &[OsString]) -> Result<()> {
             // baseline == returned and saved ≈ 0 — matching the MCP memory.find behaviour.
             // Recording the call still lets `artesian tokens --by-op` show the recall count.
             let baseline_tokens: usize = hits.iter().map(|h| count_tokens(&h.record.content)).sum();
+            println!("# scope_applied");
+            println!(
+                "{}",
+                serde_json::to_string(&scope_applied_value(
+                    &project,
+                    user_id_for_scope.as_deref(),
+                    &memory_config.collection
+                ))?
+            );
             for hit in &hits {
                 println!("{}", format_memory_hit(hit));
             }
@@ -3008,6 +3053,7 @@ async fn memory(command: MemoryCommand, raw_args: &[OsString]) -> Result<()> {
             index_chars,
             goal,
             expand,
+            project,
             config,
             root,
             backend,
@@ -3015,18 +3061,34 @@ async fn memory(command: MemoryCommand, raw_args: &[OsString]) -> Result<()> {
             let memory_config = memory_config_for_command(&config, root, backend)?;
             let index = read_index_slice(&memory_config.root, index_chars)?;
             let backend = open_memory_backend(&memory_config)?;
+            let project = effective_project(project, &memory_config);
             // `--goal` returns the bounded goal packet (goal + invariants + relevant memory);
             // otherwise the flat index + hit list.
             if let Some(goal) = goal {
-                let recall = loop_recall(backend.as_ref(), &goal).await;
-                let packet =
-                    assemble_goal_packet(Some(backend.as_ref()), &goal, None, &recall).await;
+                let recall = loop_recall_for_project(backend.as_ref(), &goal, &project).await;
+                let packet = assemble_goal_packet_with_project(
+                    Some(backend.as_ref()),
+                    &goal,
+                    None,
+                    &recall,
+                    &project,
+                )
+                .await;
+                println!("# scope_applied");
+                println!(
+                    "{}",
+                    serde_json::to_string(&scope_applied_value(
+                        &project,
+                        None,
+                        &memory_config.collection,
+                    ))?
+                );
                 println!("{packet}");
                 return Ok(());
             }
-            let mut hits = backend
-                .find(MemoryQuery::new(query).with_limit(limit))
-                .await?;
+            let mut memory_query = MemoryQuery::new(query).with_limit(limit);
+            apply_project_scope(&mut memory_query, &project);
+            let mut hits = backend.find(memory_query).await?;
             if expand {
                 hits = aquifer::expand_hits_with_neighbors(
                     backend.as_ref(),
@@ -3055,6 +3117,15 @@ async fn memory(command: MemoryCommand, raw_args: &[OsString]) -> Result<()> {
             if let Some(index) = &index {
                 println!("# index.md\n{index}");
             }
+            println!("# scope_applied");
+            println!(
+                "{}",
+                serde_json::to_string(&scope_applied_value(
+                    &project,
+                    None,
+                    &memory_config.collection
+                ))?
+            );
             println!("# memory.find");
             for hit in &hits {
                 println!("{}", format_memory_hit(hit));
@@ -3228,6 +3299,7 @@ async fn memory(command: MemoryCommand, raw_args: &[OsString]) -> Result<()> {
                     session_id: None,
                     task_id: None,
                     user_id: None,
+                    project: None,
                     source,
                     confidence: None,
                     relations: Vec::new(),
@@ -4454,23 +4526,29 @@ fn build_kit_bundle(
     Ok(WorkingContextBundle::new(snapshot, lifecycle))
 }
 
+struct BackfillRunOptions {
+    user_id: Option<String>,
+    project: Option<String>,
+    run_consolidate: bool,
+    no_link: bool,
+}
+
 async fn backfill(
     directory: PathBuf,
     config: PathBuf,
     root: PathBuf,
     backend: Option<BackendArg>,
-    user_id: Option<String>,
-    no_link: bool,
-    run_consolidate: bool,
+    options: BackfillRunOptions,
 ) -> Result<()> {
     let artesian_root = root.clone();
     let memory = memory_config_for_command(&config, root, backend)?;
+    let project = effective_project(options.project, &memory);
     if memory.backend == MemoryBackendKind::Qdrant {
         preflight_qdrant_memory(&memory).await?;
     }
     // Deterministic relation extraction is on by default: cheap, no LLM, and makes
     // `neighbors`/`by_entity` return links immediately after import.  Pass `--no-link` to opt out.
-    let backend = if no_link {
+    let backend = if options.no_link {
         open_memory_backend(&memory)?
     } else {
         open_memory_backend_with_relations(&memory)?
@@ -4480,7 +4558,8 @@ async fn backfill(
         ImportOptions {
             directory,
             okf_root: PathBuf::from(&memory.root),
-            user_id,
+            user_id: options.user_id,
+            project: Some(project),
             progress: true,
         },
         backend,
@@ -4490,7 +4569,7 @@ async fn backfill(
     .await?;
     let imported = report.memory_imported + report.task_imported;
     let skipped_duplicates = report.memory_skipped_duplicates + report.task_skipped_duplicates;
-    let link_note = if no_link {
+    let link_note = if options.no_link {
         " (relation extraction disabled via --no-link)"
     } else {
         " (entity relations extracted)"
@@ -4504,7 +4583,7 @@ async fn backfill(
         link_note,
     );
     println!("{}", serde_json::to_string_pretty(&report)?);
-    if run_consolidate {
+    if options.run_consolidate {
         println!("running consolidation pass (--consolidate)…");
         consolidate_after_import(&config, artesian_root).await;
     } else {
@@ -4546,6 +4625,7 @@ async fn onboard(
             directory,
             okf_root: PathBuf::from(&memory.root),
             user_id,
+            project: memory.project.clone().or_else(|| Some(project.clone())),
             progress: true,
         },
         backend.clone(),
@@ -4941,6 +5021,7 @@ async fn preflight_qdrant_options(options: &InitOptions) -> Result<()> {
         backend: MemoryBackendKind::Qdrant,
         root: options.memory_root.display().to_string(),
         collection: options.collection.clone(),
+        project: options.project.clone(),
         qdrant_url: options.qdrant_url.clone(),
         qdrant_rest_url: options.qdrant_rest_url.clone(),
         qdrant_api_key_env: Some(options.qdrant_api_key_env.clone()),
@@ -4987,6 +5068,7 @@ fn memory_config_for_command(
             backend: backend.unwrap_or(BackendArg::Files).into(),
             root: root.display().to_string(),
             collection: "artesian-memory".to_string(),
+            project: None,
             qdrant_url: env::var("QDRANT_URL").ok(),
             qdrant_rest_url: env::var("QDRANT_REST_URL").ok(),
             qdrant_api_key_env: Some("QDRANT_API_KEY".to_string()),
@@ -5012,6 +5094,49 @@ fn memory_config_for_command(
         config
     };
     Ok(config)
+}
+
+fn effective_project(requested: Option<String>, config: &MemoryConfig) -> String {
+    requested
+        .and_then(normalize_project)
+        .or_else(|| config.project.clone().and_then(normalize_project))
+        .unwrap_or_else(|| SHARED_PROJECT.to_string())
+}
+
+fn apply_project_scope(query: &mut MemoryQuery, project: &str) {
+    query.project = Some(project.to_string());
+}
+
+fn scope_applied_value(project: &str, user_id: Option<&str>, collection: &str) -> Value {
+    json!({
+        "project": project,
+        "union": project_union_labels(project),
+        "user_id": user_id,
+        "collection": collection,
+    })
+}
+
+fn project_union_labels(project: &str) -> Vec<String> {
+    let mut labels = vec![project.to_string()];
+    if project != SHARED_PROJECT {
+        labels.push(SHARED_PROJECT.to_string());
+    }
+    labels.push(UNTAGGED_PROJECT_LABEL.to_string());
+    labels
+}
+
+async fn projects(config: PathBuf, root: PathBuf, backend: Option<BackendArg>) -> Result<()> {
+    let memory_config = memory_config_for_command(&config, root, backend)?;
+    let backend = open_memory_backend(&memory_config)?;
+    let projects = backend.projects().await?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "collection": memory_config.collection,
+            "projects": projects,
+        }))?
+    );
+    Ok(())
 }
 
 fn write_mcp_registrations(config_path: &Path, backend: MemoryBackendKind) -> Result<()> {
@@ -5533,6 +5658,7 @@ mod tests {
             backend: MemoryBackendKind::Qdrant,
             root: ".artesian".to_string(),
             collection: "artesian-memory".to_string(),
+            project: None,
             qdrant_url: Some("http://127.0.0.1:6334".to_string()),
             qdrant_rest_url: None,
             qdrant_api_key_env: Some("QDRANT__SERVICE__API_KEY".to_string()),

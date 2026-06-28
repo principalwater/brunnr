@@ -82,6 +82,7 @@ async fn live_qdrant_vector_backend_satisfies_memory_contract() {
             session_id: None,
             task_id: None,
             user_id: None,
+            project: None,
             source: None,
             confidence: None,
             relations: Vec::new(),
@@ -101,6 +102,7 @@ async fn live_qdrant_vector_backend_satisfies_memory_contract() {
             session_id: None,
             task_id: None,
             user_id: None,
+            project: None,
             source: None,
             confidence: None,
             relations: Vec::new(),
@@ -184,6 +186,7 @@ async fn live_qdrant_small_to_big_expands_and_reconstructs() {
             session_id: None,
             task_id: None,
             user_id: None,
+            project: None,
             source: None,
             confidence: None,
             relations: Vec::new(),
@@ -268,6 +271,7 @@ async fn live_qdrant_collections_isolate_two_projects() {
             session_id: None,
             task_id: None,
             user_id: Some("user-a".to_string()),
+            project: None,
             source: None,
             confidence: None,
             relations: Vec::new(),
@@ -287,6 +291,7 @@ async fn live_qdrant_collections_isolate_two_projects() {
             session_id: None,
             task_id: None,
             user_id: Some("user-b".to_string()),
+            project: None,
             source: None,
             confidence: None,
             relations: Vec::new(),
@@ -318,4 +323,97 @@ async fn live_qdrant_collections_isolate_two_projects() {
         .delete_collection(&format!("artesian_project_b_{collection_suffix}"))
         .await
         .expect("cleanup project B collection");
+}
+
+#[tokio::test]
+#[ignore = "requires a local Qdrant instance and QDRANT_URL"]
+async fn live_qdrant_project_union_prevents_cross_project_leaks() {
+    let Ok(url) = env::var("QDRANT_URL") else {
+        eprintln!("QDRANT_URL is not set; skipping live Qdrant test");
+        return;
+    };
+    let mut config = QdrantVectorStoreConfig::new(url);
+    config.api_key = env::var("QDRANT_API_KEY").ok();
+    let collection = format!("artesian_project_union_{}", Utc::now().timestamp_millis());
+    let backend = VectorMemoryBackend::new(
+        QdrantVectorStore::connect(config).expect("Qdrant store should connect"),
+        VectorMemoryConfig::new(collection.clone()),
+    )
+    .expect("backend should construct");
+
+    for (node, project) in [
+        ("node:qdrant-project-a", Some("A")),
+        ("node:qdrant-project-shared", Some("shared")),
+        ("node:qdrant-project-b", Some("B")),
+        ("node:qdrant-project-untagged", None),
+    ] {
+        let mut memory = StoreMemory::atom(format!("qdrant partition sentinel {node}"));
+        memory.node_id = Some(node.to_string());
+        memory.project = project.map(str::to_string);
+        backend.store(memory).await.expect("store should succeed");
+    }
+
+    let mut query_a = MemoryQuery::new("qdrant partition sentinel").with_limit(10);
+    query_a.project = Some("A".to_string());
+    let nodes_a = backend
+        .find(query_a)
+        .await
+        .expect("project A recall")
+        .into_iter()
+        .map(|hit| hit.record.node_id)
+        .collect::<Vec<_>>();
+    assert!(
+        nodes_a.contains(&"node:qdrant-project-a".to_string()),
+        "{nodes_a:?}"
+    );
+    assert!(
+        nodes_a.contains(&"node:qdrant-project-shared".to_string()),
+        "{nodes_a:?}"
+    );
+    assert!(
+        nodes_a.contains(&"node:qdrant-project-untagged".to_string()),
+        "{nodes_a:?}"
+    );
+    assert!(
+        !nodes_a.contains(&"node:qdrant-project-b".to_string()),
+        "cross-project leak into A recall: {nodes_a:?}"
+    );
+
+    let mut query_b = MemoryQuery::new("qdrant partition sentinel").with_limit(10);
+    query_b.project = Some("B".to_string());
+    let nodes_b = backend
+        .find(query_b)
+        .await
+        .expect("project B recall")
+        .into_iter()
+        .map(|hit| hit.record.node_id)
+        .collect::<Vec<_>>();
+    assert!(
+        !nodes_b.contains(&"node:qdrant-project-a".to_string()),
+        "cross-project leak into B recall: {nodes_b:?}"
+    );
+
+    let default_nodes = backend
+        .find(MemoryQuery::new("qdrant partition sentinel").with_limit(10))
+        .await
+        .expect("default recall")
+        .into_iter()
+        .map(|hit| hit.record.node_id)
+        .collect::<Vec<_>>();
+    assert!(
+        !default_nodes.contains(&"node:qdrant-project-a".to_string())
+            && !default_nodes.contains(&"node:qdrant-project-b".to_string()),
+        "unset project fell back to whole-collection recall: {default_nodes:?}"
+    );
+
+    let projects = backend.projects().await.expect("project discovery");
+    assert!(projects.contains(&"A".to_string()), "{projects:?}");
+    assert!(projects.contains(&"B".to_string()), "{projects:?}");
+    assert!(projects.contains(&"shared".to_string()), "{projects:?}");
+
+    backend
+        .vector_store()
+        .delete_collection(&collection)
+        .await
+        .expect("cleanup project union collection");
 }

@@ -244,6 +244,10 @@ impl<B: MemoryBackend> MemoryBackend for TransactionalMemory<B> {
     fn by_entity(&self, entity: &str) -> BoxFuture<'_, MemoryResult<Vec<MemoryRecord>>> {
         self.inner.by_entity(entity)
     }
+
+    fn projects(&self) -> BoxFuture<'_, MemoryResult<Vec<String>>> {
+        self.inner.projects()
+    }
 }
 
 /// Report from a directory sync.

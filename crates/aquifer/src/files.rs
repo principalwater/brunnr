@@ -17,6 +17,7 @@ use crate::{
     identity::stable_memory_id,
     MemoryBackend, MemoryError, MemoryId, MemoryQuery, MemoryRecord, MemoryResult, MemoryScope,
     MemoryState, MemoryTier, Relation, SearchHit, SearchSource, SessionLaneLock, StoreMemory,
+    SHARED_PROJECT,
 };
 
 #[derive(Debug, Clone)]
@@ -219,6 +220,7 @@ impl MemoryBackend for FilesBackend {
                 session_id: memory.session_id,
                 task_id: memory.task_id,
                 user_id: memory.user_id,
+                project: memory.project,
                 source: memory.source,
                 confidence: memory.confidence,
                 relations,
@@ -271,6 +273,20 @@ impl MemoryBackend for FilesBackend {
         }
         .boxed()
     }
+
+    fn projects(&self) -> BoxFuture<'_, MemoryResult<Vec<String>>> {
+        async move {
+            let mut projects = self
+                .load_records()?
+                .into_iter()
+                .filter_map(|record| record.project)
+                .collect::<Vec<_>>();
+            projects.sort();
+            projects.dedup();
+            Ok(projects)
+        }
+        .boxed()
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -291,6 +307,8 @@ struct FileHeader {
     task_id: Option<String>,
     #[serde(default)]
     user_id: Option<String>,
+    #[serde(default)]
+    project: Option<String>,
     #[serde(default)]
     source: Option<String>,
     #[serde(default)]
@@ -351,6 +369,9 @@ struct OkfHeader {
     user_id: Option<String>,
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
+    project: Option<String>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     source: Option<String>,
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -402,6 +423,7 @@ pub fn render_record(record: &MemoryRecord) -> MemoryResult<String> {
         session_id: record.session_id.clone(),
         task_id: record.task_id.clone(),
         user_id: record.user_id.clone(),
+        project: record.project.clone(),
         source: record.source.clone(),
         confidence: record.confidence,
         relations: record.relations.clone(),
@@ -432,6 +454,7 @@ fn render_okf_header(header: FileHeader) -> String {
         session_id: header.session_id,
         task_id: header.task_id,
         user_id: header.user_id,
+        project: header.project,
         source: header.source,
         confidence: header.confidence,
         relations: header.relations,
@@ -477,6 +500,7 @@ pub fn parse_record(text: &str) -> MemoryResult<MemoryRecord> {
         session_id: header.session_id,
         task_id: header.task_id,
         user_id: header.user_id,
+        project: header.project,
         source: header.source,
         confidence: header.confidence,
         relations,
@@ -535,6 +559,7 @@ fn parse_okf_record(text: &str) -> MemoryResult<MemoryRecord> {
         session_id: header.session_id.clone(),
         task_id: header.task_id.clone(),
         user_id: header.user_id.clone(),
+        project: header.project.clone(),
         source: header.source.clone(),
         confidence: header.confidence,
         relations: header.relations.clone(),
@@ -555,6 +580,7 @@ fn parse_okf_record(text: &str) -> MemoryResult<MemoryRecord> {
         session_id: header.session_id,
         task_id: header.task_id,
         user_id: header.user_id,
+        project: header.project,
         source: header.source,
         confidence: header.confidence,
         relations,
@@ -632,6 +658,17 @@ fn matches_tenancy(record: &MemoryRecord, query: &MemoryQuery) -> bool {
             .user_id
             .as_ref()
             .is_none_or(|user_id| record.user_id.as_ref() == Some(user_id))
+        && matches_project_union(record.project.as_deref(), query.effective_project())
+}
+
+fn matches_project_union(record_project: Option<&str>, project: &str) -> bool {
+    let project = if project.trim().is_empty() {
+        SHARED_PROJECT
+    } else {
+        project
+    };
+    record_project
+        .is_none_or(|record_project| record_project == project || record_project == SHARED_PROJECT)
 }
 
 fn score_record(record: MemoryRecord, terms: &[String], keep_zero: bool) -> Option<SearchHit> {

@@ -89,9 +89,10 @@ pub use temporal::{
 };
 pub use txn::{sync_okf_directory, CommitLog, SyncReport, TransactionalMemory, TxnError, TxnSeq};
 pub use types::{
-    insert_skill_procedure_metadata, skill_procedure_from_metadata, MemoryError, MemoryId,
-    MemoryQuery, MemoryRecord, MemoryResult, MemoryScope, MemoryState, MemoryTier, ProcedureStep,
-    RrfOptions, SearchHit, SearchSource, StoreMemory, SKILL_PROCEDURE_METADATA_KEY,
+    insert_skill_procedure_metadata, normalize_project, skill_procedure_from_metadata, MemoryError,
+    MemoryId, MemoryQuery, MemoryRecord, MemoryResult, MemoryScope, MemoryState, MemoryTier,
+    ProcedureStep, RrfOptions, SearchHit, SearchSource, StoreMemory, SHARED_PROJECT,
+    SKILL_PROCEDURE_METADATA_KEY, UNTAGGED_PROJECT_LABEL,
 };
 pub use upgrade::{
     default_migration_collection, export_okf_bundle, migrate_okf_bundle, migration_manifest_path,

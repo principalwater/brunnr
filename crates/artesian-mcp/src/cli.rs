@@ -18,6 +18,8 @@ struct Args {
     backend: BackendArg,
     #[arg(long, default_value = "artesian-memory")]
     collection: String,
+    #[arg(long)]
+    project: Option<String>,
     #[arg(long, env = "QDRANT_URL")]
     qdrant_url: Option<String>,
     #[arg(long, env = "QDRANT_REST_URL")]
@@ -98,6 +100,7 @@ fn load_runtime_config(args: &Args) -> anyhow::Result<ArtesianConfig> {
             backend: args.backend.into(),
             root: args.root.display().to_string(),
             collection: args.collection.clone(),
+            project: args.project.clone(),
             qdrant_url: args
                 .qdrant_url
                 .clone()

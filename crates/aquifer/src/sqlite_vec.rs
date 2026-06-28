@@ -313,6 +313,38 @@ impl VectorStore for SqliteVecVectorStore {
         .boxed()
     }
 
+    fn distinct_payload_values(
+        &self,
+        collection: &str,
+        field: &str,
+    ) -> BoxFuture<'_, MemoryResult<Vec<String>>> {
+        let collection = collection.to_string();
+        let field = field.to_string();
+        async move {
+            let tables = Tables::new(&collection)?;
+            let Some(path) = json_field_path(&field) else {
+                return Ok(Vec::new());
+            };
+            let connection = self.lock()?;
+            let mut statement = connection
+                .prepare(&format!(
+                    "SELECT DISTINCT json_extract(payload, '{path}')
+                     FROM {records}
+                     WHERE json_extract(payload, '{path}') IS NOT NULL
+                     ORDER BY 1",
+                    records = tables.records,
+                ))
+                .map_err(sqlite_error)?;
+            let values = statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(sqlite_error)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(sqlite_error)?;
+            Ok(values)
+        }
+        .boxed()
+    }
+
     fn capabilities(&self) -> VectorStoreCapabilities {
         VectorStoreCapabilities {
             supports_server_side_hybrid: false,

@@ -44,6 +44,7 @@ async fn memory_tools_store_and_find_with_files_backend() {
             session_id: None,
             task_id: None,
             user_id: None,
+            project: None,
         }))
         .await
         .expect("store should succeed")
@@ -60,6 +61,7 @@ async fn memory_tools_store_and_find_with_files_backend() {
             session_id: None,
             task_id: None,
             user_id: None,
+            project: None,
         }))
         .await
         .expect("find should succeed")
@@ -87,6 +89,74 @@ async fn memory_tools_store_and_find_with_files_backend() {
 }
 
 #[tokio::test]
+async fn memory_find_reports_project_scope_and_projects_tool_lists_values() {
+    let tempdir = TempDir::new("mcp-projects");
+    let server = MemoryServer::new(tempdir.path());
+
+    for (node, project) in [
+        ("node:mcp-project-a", "A"),
+        ("node:mcp-project-shared", "shared"),
+        ("node:mcp-project-b", "B"),
+    ] {
+        server
+            .memory_store(Parameters(StoreRequest {
+                content: format!("mcp partition sentinel {node}"),
+                tags: None,
+                node_id: Some(node.to_string()),
+                relations: None,
+                source: None,
+                confidence: None,
+                scope: None,
+                agent_id: None,
+                session_id: None,
+                task_id: None,
+                user_id: None,
+                project: Some(project.to_string()),
+            }))
+            .await
+            .expect("store should succeed");
+    }
+
+    let found = server
+        .memory_find(Parameters(FindRequest {
+            query: "mcp partition sentinel".to_string(),
+            limit: Some(10),
+            node_id: None,
+            expand: None,
+            scope: None,
+            agent_id: None,
+            session_id: None,
+            task_id: None,
+            user_id: None,
+            project: Some("A".to_string()),
+        }))
+        .await
+        .expect("find should succeed")
+        .0;
+    let nodes = found
+        .hits
+        .iter()
+        .map(|hit| hit.node_id.as_str())
+        .collect::<Vec<_>>();
+
+    assert!(nodes.contains(&"node:mcp-project-a"), "{nodes:?}");
+    assert!(nodes.contains(&"node:mcp-project-shared"), "{nodes:?}");
+    assert!(!nodes.contains(&"node:mcp-project-b"), "{nodes:?}");
+    assert_eq!(found.scope_applied.project, "A");
+    assert_eq!(found.scope_applied.union, vec!["A", "shared", "(untagged)"]);
+
+    let projects = server
+        .memory_projects()
+        .await
+        .expect("projects should succeed")
+        .0
+        .projects;
+    assert!(projects.contains(&"A".to_string()), "{projects:?}");
+    assert!(projects.contains(&"B".to_string()), "{projects:?}");
+    assert!(projects.contains(&"shared".to_string()), "{projects:?}");
+}
+
+#[tokio::test]
 async fn memory_find_expand_includes_relation_neighbor() {
     let tempdir = TempDir::new("mcp-expand");
     let server = MemoryServer::new(tempdir.path());
@@ -109,6 +179,7 @@ async fn memory_find_expand_includes_relation_neighbor() {
             session_id: None,
             task_id: None,
             user_id: None,
+            project: None,
         }))
         .await
         .expect("store anchor should succeed");
@@ -130,6 +201,7 @@ async fn memory_find_expand_includes_relation_neighbor() {
             session_id: None,
             task_id: None,
             user_id: None,
+            project: None,
         }))
         .await
         .expect("store neighbor should succeed");
@@ -145,6 +217,7 @@ async fn memory_find_expand_includes_relation_neighbor() {
             session_id: None,
             task_id: None,
             user_id: None,
+            project: None,
         }))
         .await
         .expect("default find should succeed")
@@ -163,6 +236,7 @@ async fn memory_find_expand_includes_relation_neighbor() {
             session_id: None,
             task_id: None,
             user_id: None,
+            project: None,
         }))
         .await
         .expect("expanded find should succeed")
@@ -198,6 +272,7 @@ async fn memory_commit_runs_acc_cycle_with_files_backend() {
                 session_id: None,
                 task_id: None,
                 user_id: None,
+                project: None,
             }))
             .await
             .expect("store should succeed");
@@ -243,6 +318,7 @@ async fn memory_qualify_returns_audited_admit_and_reject_decisions() {
             session_id: None,
             task_id: None,
             user_id: None,
+            project: None,
         }))
         .await
         .expect("store should succeed");
@@ -321,6 +397,7 @@ async fn memory_session_checkpoint_and_resume_are_cross_agent() {
             session_id: Some("session-a".to_string()),
             task_id: Some("task-a".to_string()),
             user_id: Some("user-a".to_string()),
+            project: None,
         }))
         .await
         .expect("session memory should store");
@@ -1400,6 +1477,7 @@ async fn memory_tools_store_and_find_with_sqlite_vec_backend() {
             session_id: None,
             task_id: None,
             user_id: None,
+            project: None,
         }))
         .await
         .expect("store should succeed");
@@ -1415,6 +1493,7 @@ async fn memory_tools_store_and_find_with_sqlite_vec_backend() {
             session_id: None,
             task_id: None,
             user_id: None,
+            project: None,
         }))
         .await
         .expect("find should succeed")
@@ -1776,6 +1855,7 @@ async fn ocf_cross_agent_session_continuity_end_to_end() {
             session_id: Some("s1".to_string()),
             task_id: Some("DPT-4477 add dag_id/run_id".to_string()),
             user_id: Some("u1".to_string()),
+            project: None,
         }))
         .await
         .expect("session-scoped memory should store");
@@ -1794,6 +1874,7 @@ async fn ocf_cross_agent_session_continuity_end_to_end() {
             session_id: None,
             task_id: None,
             user_id: None,
+            project: None,
         }))
         .await
         .expect("invariant memory should store");
@@ -2045,6 +2126,7 @@ async fn memory_learn_and_skills_list() {
             session_id: None,
             task_id: None,
             user_id: None,
+            project: None,
         }))
         .await
         .expect("find should succeed")

@@ -184,6 +184,7 @@ impl SessionStore {
                 session_id: Some(key.session_id.clone()),
                 task_id: Some(key.task_id.clone()),
                 user_id: Some(key.user_id.clone()),
+                project: None,
                 source: Some(SESSION_RECORD_SOURCE.to_string()),
                 confidence: Some(1.0),
                 relations: Vec::new(),
