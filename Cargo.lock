@@ -104,7 +104,7 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
 name = "aquifer"
-version = "0.5.8"
+version = "0.5.9"
 dependencies = [
  "artesian-test-support",
  "chrono",
@@ -131,7 +131,7 @@ version = "0.0.0"
 
 [[package]]
 name = "artesian-bench"
-version = "0.5.8"
+version = "0.5.9"
 dependencies = [
  "anyhow",
  "aquifer",
@@ -146,7 +146,7 @@ dependencies = [
 
 [[package]]
 name = "artesian-cli"
-version = "0.5.8"
+version = "0.5.9"
 dependencies = [
  "anyhow",
  "aquifer",
@@ -172,7 +172,7 @@ dependencies = [
 
 [[package]]
 name = "artesian-core"
-version = "0.5.8"
+version = "0.5.9"
 dependencies = [
  "chrono",
  "futures-core",
@@ -187,7 +187,7 @@ dependencies = [
 
 [[package]]
 name = "artesian-mcp"
-version = "0.5.8"
+version = "0.5.9"
 dependencies = [
  "anyhow",
  "aquifer",
@@ -212,7 +212,7 @@ dependencies = [
 
 [[package]]
 name = "artesian-process-agent"
-version = "0.5.8"
+version = "0.5.9"
 dependencies = [
  "artesian-core",
  "artesian-test-support",
@@ -226,7 +226,7 @@ dependencies = [
 
 [[package]]
 name = "artesian-test-support"
-version = "0.5.8"
+version = "0.5.9"
 
 [[package]]
 name = "async-stream"
@@ -386,7 +386,7 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "basin"
-version = "0.5.8"
+version = "0.5.9"
 dependencies = [
  "aquifer",
  "artesian-core",
@@ -1019,7 +1019,7 @@ dependencies = [
 
 [[package]]
 name = "flume"
-version = "0.5.8"
+version = "0.5.9"
 dependencies = [
  "anyhow",
  "aquifer",
@@ -1154,7 +1154,7 @@ dependencies = [
 
 [[package]]
 name = "gauge"
-version = "0.5.8"
+version = "0.5.9"
 dependencies = [
  "aquifer",
  "futures-util",
@@ -1282,7 +1282,7 @@ dependencies = [
 
 [[package]]
 name = "headgate"
-version = "0.5.8"
+version = "0.5.9"
 dependencies = [
  "aquifer",
  "artesian-core",
@@ -1299,7 +1299,7 @@ dependencies = [
 
 [[package]]
 name = "headrace"
-version = "0.5.8"
+version = "0.5.9"
 dependencies = [
  "aquifer",
  "artesian-core",
@@ -2769,7 +2769,7 @@ dependencies = [
 
 [[package]]
 name = "sandbox"
-version = "0.5.8"
+version = "0.5.9"
 dependencies = [
  "artesian-test-support",
  "futures-util",
