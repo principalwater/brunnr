@@ -250,7 +250,7 @@ pub fn render_regression_markdown(
             backend.task_success
         ));
     }
-    output.push_str("\n");
+    output.push('\n');
     output.push_str(&format!(
         "Leak gate: {} (project hits: {:?}; no-project hits: {:?})\n",
         if report.leak_gate.passed {
