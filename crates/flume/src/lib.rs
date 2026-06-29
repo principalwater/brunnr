@@ -2,6 +2,7 @@
 
 //! Artesian-native agent teams (Flume).
 
+pub mod consolidation;
 pub mod lane;
 pub mod loop_core;
 pub mod quota;
@@ -14,7 +15,9 @@ pub use lane::{
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
+    future::Future,
     path::{Path, PathBuf},
+    pin::Pin,
     str::FromStr,
     time::Duration,
 };
@@ -24,8 +27,9 @@ use artesian_core::{
     EventEnvelope, EventSender, EventType, Role, SpawnRequest,
 };
 use artesian_process_agent::{
-    validate_binding_model, GcOptions, ProcessAgent, ProcessAgentConfig, ProcessSupervisor,
-    ReapReport, WorkerEvent,
+    apply_native_subagent_runtime_hints, detect_native_subagent_runtime, validate_binding_model,
+    GcOptions, NativeSubagentDetection, NativeSubagentRuntimeKind, ProcessAgent,
+    ProcessAgentConfig, ProcessSupervisor, ReapReport, WorkerEvent,
 };
 pub use artesian_process_agent::{GcOptions as TeamGcOptions, ReapReport as TeamReapReport};
 
@@ -191,6 +195,63 @@ fn default_routing_cost_epsilon() -> f32 {
 
 fn default_routing_trace_limit() -> usize {
     DEFAULT_ROUTING_TRACE_LIMIT
+}
+
+/// Per-binding native-subagent capability metadata kept sidecar-local to Flume.
+///
+/// This avoids changing `artesian_core::AgentBinding` while still allowing a binding to advertise
+/// that the target runtime can fan out through its own background-subagent mechanism.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NativeSubagentProfile {
+    pub role: Role,
+    pub agent: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub native_subagents: bool,
+}
+
+/// Opt-in native-subagent dispatch config.
+///
+/// Defaults are inert: fresh `ProcessAgent` dispatch remains the only path unless a caller sets
+/// `enabled = true` and either declares a profile or supplies positive auto-detection signals.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct NativeSubagentConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub profiles: Vec<NativeSubagentProfile>,
+    #[serde(default)]
+    pub detection: NativeSubagentDetection,
+}
+
+impl NativeSubagentConfig {
+    pub fn enabled_with_detection(detection: NativeSubagentDetection) -> Self {
+        Self {
+            enabled: true,
+            profiles: Vec::new(),
+            detection,
+        }
+    }
+
+    pub fn profile_for(&self, binding: &AgentBinding) -> Option<&NativeSubagentProfile> {
+        self.profiles
+            .iter()
+            .filter(|profile| profile.role == binding.role && profile.agent == binding.agent)
+            .find(|profile| {
+                profile.model.is_none()
+                    || binding.model.is_none()
+                    || profile.model.as_deref() == binding.model.as_deref()
+            })
+    }
+}
+
+/// Dispatch route selected for a delegation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DelegationDispatchStrategy {
+    FreshProcess,
+    NativeSubagent(NativeSubagentRuntimeKind),
 }
 
 /// Signals used by the rule-based difficulty gate.
@@ -819,9 +880,58 @@ pub struct TeamWorkerEvent {
     pub raw: String,
 }
 
+pub type DelegationDispatchFuture<'a> =
+    Pin<Box<dyn Future<Output = FlumeResult<TeamExecution>> + Send + 'a>>;
+
+/// Executes a delegation through the selected dispatch strategy.
+///
+/// Tests and embedding runtimes can stub this seam to verify strategy selection without launching
+/// live agent CLIs. The default dispatcher preserves the existing supervised process path.
+pub trait DelegationDispatcher: Send + Sync {
+    fn dispatch<'a>(
+        &'a self,
+        strategy: DelegationDispatchStrategy,
+        config: TeamRuntimeConfig,
+        delegation: Delegation,
+        team_id: &'a str,
+        teammate_name: &'a str,
+        event_sender: Option<mpsc::UnboundedSender<TeamWorkerEvent>>,
+    ) -> DelegationDispatchFuture<'a>;
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ProcessDelegationDispatcher;
+
+impl DelegationDispatcher for ProcessDelegationDispatcher {
+    fn dispatch<'a>(
+        &'a self,
+        strategy: DelegationDispatchStrategy,
+        config: TeamRuntimeConfig,
+        delegation: Delegation,
+        team_id: &'a str,
+        teammate_name: &'a str,
+        event_sender: Option<mpsc::UnboundedSender<TeamWorkerEvent>>,
+    ) -> DelegationDispatchFuture<'a> {
+        let team_id = team_id.to_string();
+        let teammate_name = teammate_name.to_string();
+        Box::pin(async move {
+            execute_delegation_via_process(
+                config,
+                delegation,
+                strategy,
+                &team_id,
+                &teammate_name,
+                event_sender,
+            )
+            .await
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TeamRuntime {
     config: TeamRuntimeConfig,
+    native_subagents: NativeSubagentConfig,
     teams: BTreeMap<String, TeamState>,
     event_counter: u64,
 }
@@ -830,6 +940,7 @@ impl TeamRuntime {
     pub fn new(config: TeamRuntimeConfig) -> Self {
         Self {
             config,
+            native_subagents: NativeSubagentConfig::default(),
             teams: BTreeMap::new(),
             event_counter: 0,
         }
@@ -837,6 +948,19 @@ impl TeamRuntime {
 
     pub fn config(&self) -> &TeamRuntimeConfig {
         &self.config
+    }
+
+    pub fn native_subagents(&self) -> &NativeSubagentConfig {
+        &self.native_subagents
+    }
+
+    pub fn with_native_subagents(mut self, native_subagents: NativeSubagentConfig) -> Self {
+        self.native_subagents = native_subagents;
+        self
+    }
+
+    pub fn set_native_subagents(&mut self, native_subagents: NativeSubagentConfig) {
+        self.native_subagents = native_subagents;
     }
 
     pub fn definitions(&self) -> &[RoleDefinition] {
@@ -1299,12 +1423,14 @@ impl TeamRuntime {
         teammate_name: &str,
         event_sender: Option<mpsc::UnboundedSender<TeamWorkerEvent>>,
     ) -> FlumeResult<TeamExecution> {
-        Self::execute_delegation_with_config(
+        Self::execute_delegation_with_dispatcher(
             self.config.clone(),
+            self.native_subagents.clone(),
             delegation,
             team_id,
             teammate_name,
             event_sender,
+            &ProcessDelegationDispatcher,
         )
         .await
     }
@@ -1320,58 +1446,62 @@ impl TeamRuntime {
         teammate_name: &str,
         event_sender: Option<mpsc::UnboundedSender<TeamWorkerEvent>>,
     ) -> FlumeResult<TeamExecution> {
-        let binding = &delegation.binding;
-        let process = process_agent_for_config(&config, binding);
-        let session = process
-            .spawn(SpawnRequest {
-                role: binding.role,
-                agent: binding.agent.clone(),
-                model: binding.model.clone(),
-                working_dir: Some(config.repo_root.display().to_string()),
-                resume_packet: delegation.resume_packet.clone(),
-            })
-            .await?;
-        let (worker_sender, mut worker_receiver) = mpsc::unbounded_channel();
-        let response = process.send_with_event_sender(
-            &session,
-            AgentMessage {
-                content: delegation.instruction.clone(),
-            },
-            Some(worker_sender),
-        );
-        tokio::pin!(response);
-        let mut events = Vec::new();
-        let response = loop {
-            tokio::select! {
-                maybe_event = worker_receiver.recv() => {
-                    match maybe_event {
-                        Some(event) => push_worker_event(
-                            &mut events,
-                            event_sender.as_ref(),
-                            team_id,
-                            teammate_name,
-                            event,
-                        ),
-                        None => break response.await,
-                    }
-                }
-                response = &mut response => break response,
-            }
-        };
-        while let Some(event) = worker_receiver.recv().await {
-            push_worker_event(
-                &mut events,
-                event_sender.as_ref(),
+        Self::execute_delegation_with_native_config(
+            config,
+            NativeSubagentConfig::default(),
+            delegation,
+            team_id,
+            teammate_name,
+            event_sender,
+        )
+        .await
+    }
+
+    pub async fn execute_delegation_with_native_config(
+        config: TeamRuntimeConfig,
+        native_subagents: NativeSubagentConfig,
+        delegation: Delegation,
+        team_id: &str,
+        teammate_name: &str,
+        event_sender: Option<mpsc::UnboundedSender<TeamWorkerEvent>>,
+    ) -> FlumeResult<TeamExecution> {
+        Self::execute_delegation_with_dispatcher(
+            config,
+            native_subagents,
+            delegation,
+            team_id,
+            teammate_name,
+            event_sender,
+            &ProcessDelegationDispatcher,
+        )
+        .await
+    }
+
+    /// Execute a delegation through an injected dispatcher.
+    ///
+    /// This is the native-subagent strategy seam: production uses
+    /// [`ProcessDelegationDispatcher`], while tests or embedding runtimes can provide native
+    /// dispatchers without changing team orchestration.
+    pub async fn execute_delegation_with_dispatcher(
+        config: TeamRuntimeConfig,
+        native_subagents: NativeSubagentConfig,
+        delegation: Delegation,
+        team_id: &str,
+        teammate_name: &str,
+        event_sender: Option<mpsc::UnboundedSender<TeamWorkerEvent>>,
+        dispatcher: &dyn DelegationDispatcher,
+    ) -> FlumeResult<TeamExecution> {
+        let strategy = select_delegation_dispatch_strategy(&native_subagents, &delegation.binding);
+        dispatcher
+            .dispatch(
+                strategy,
+                config,
+                delegation,
                 team_id,
                 teammate_name,
-                event,
-            );
-        }
-        let response = response?;
-        Ok(TeamExecution {
-            response: redact_secrets(&response.content),
-            events,
-        })
+                event_sender,
+            )
+            .await
     }
 
     fn requires_plan_approval(&self, team_id: &str, request: &TeamTaskClaim) -> FlumeResult<bool> {
@@ -1509,6 +1639,14 @@ impl TeamRuntime {
 }
 
 fn process_agent_for_config(config: &TeamRuntimeConfig, binding: &AgentBinding) -> ProcessAgent {
+    ProcessAgent::new(process_agent_config_for_binding(config, binding, None))
+}
+
+fn process_agent_config_for_binding(
+    config: &TeamRuntimeConfig,
+    binding: &AgentBinding,
+    native_kind: Option<NativeSubagentRuntimeKind>,
+) -> ProcessAgentConfig {
     let command = binding
         .command
         .clone()
@@ -1527,19 +1665,124 @@ fn process_agent_for_config(config: &TeamRuntimeConfig, binding: &AgentBinding) 
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    ProcessAgent::new(
-        ProcessAgentConfig::new(command)
-            .with_agent_id(binding.agent.clone())
-            .with_default_model(binding.model.clone())
-            .with_args(binding.args.clone())
-            .with_static_models(static_models)
-            .with_working_dir(&config.repo_root)
-            .with_timeout(Duration::from_secs(binding.timeout_seconds.unwrap_or(120)))
-            .with_registry_dir(config.registry_dir.clone())
-            .with_max_concurrent_spawns(config.max_concurrent_spawns)
-            .with_max_lifetime(config.max_lifetime)
-            .with_termination_grace(config.termination_grace),
-    )
+    let process_config = ProcessAgentConfig::new(command)
+        .with_agent_id(binding.agent.clone())
+        .with_default_model(binding.model.clone())
+        .with_args(binding.args.clone())
+        .with_static_models(static_models)
+        .with_working_dir(&config.repo_root)
+        .with_timeout(Duration::from_secs(binding.timeout_seconds.unwrap_or(120)))
+        .with_registry_dir(config.registry_dir.clone())
+        .with_max_concurrent_spawns(config.max_concurrent_spawns)
+        .with_max_lifetime(config.max_lifetime)
+        .with_termination_grace(config.termination_grace);
+    if let Some(kind) = native_kind {
+        apply_native_subagent_runtime_hints(process_config, kind)
+    } else {
+        process_config
+    }
+}
+
+pub fn select_delegation_dispatch_strategy(
+    native_subagents: &NativeSubagentConfig,
+    binding: &AgentBinding,
+) -> DelegationDispatchStrategy {
+    if !native_subagents.enabled {
+        return DelegationDispatchStrategy::FreshProcess;
+    }
+    let command = binding
+        .command
+        .clone()
+        .unwrap_or_else(|| binding.agent.clone());
+    let detected =
+        detect_native_subagent_runtime(&binding.agent, &command, native_subagents.detection);
+    let advertised = native_subagents
+        .profile_for(binding)
+        .is_some_and(|profile| profile.native_subagents);
+    match (advertised, detected) {
+        (_, Some(kind)) => DelegationDispatchStrategy::NativeSubagent(kind),
+        (true, None) => match binding.agent.trim().to_ascii_lowercase().as_str() {
+            "claude" | "claude-code" => {
+                DelegationDispatchStrategy::NativeSubagent(NativeSubagentRuntimeKind::Claude)
+            }
+            "codex" => DelegationDispatchStrategy::NativeSubagent(NativeSubagentRuntimeKind::Codex),
+            "opencode" => {
+                DelegationDispatchStrategy::NativeSubagent(NativeSubagentRuntimeKind::Opencode)
+            }
+            _ => DelegationDispatchStrategy::FreshProcess,
+        },
+        (false, None) => DelegationDispatchStrategy::FreshProcess,
+    }
+}
+
+async fn execute_delegation_via_process(
+    config: TeamRuntimeConfig,
+    delegation: Delegation,
+    strategy: DelegationDispatchStrategy,
+    team_id: &str,
+    teammate_name: &str,
+    event_sender: Option<mpsc::UnboundedSender<TeamWorkerEvent>>,
+) -> FlumeResult<TeamExecution> {
+    let binding = &delegation.binding;
+    let native_kind = match strategy {
+        DelegationDispatchStrategy::FreshProcess => None,
+        DelegationDispatchStrategy::NativeSubagent(kind) => Some(kind),
+    };
+    let process = ProcessAgent::new(process_agent_config_for_binding(
+        &config,
+        binding,
+        native_kind,
+    ));
+    let session = process
+        .spawn(SpawnRequest {
+            role: binding.role,
+            agent: binding.agent.clone(),
+            model: binding.model.clone(),
+            working_dir: Some(config.repo_root.display().to_string()),
+            resume_packet: delegation.resume_packet.clone(),
+        })
+        .await?;
+    let (worker_sender, mut worker_receiver) = mpsc::unbounded_channel();
+    let response = process.send_with_event_sender(
+        &session,
+        AgentMessage {
+            content: delegation.instruction.clone(),
+        },
+        Some(worker_sender),
+    );
+    tokio::pin!(response);
+    let mut events = Vec::new();
+    let response = loop {
+        tokio::select! {
+            maybe_event = worker_receiver.recv() => {
+                match maybe_event {
+                    Some(event) => push_worker_event(
+                        &mut events,
+                        event_sender.as_ref(),
+                        team_id,
+                        teammate_name,
+                        event,
+                    ),
+                    None => break response.await,
+                }
+            }
+            response = &mut response => break response,
+        }
+    };
+    while let Some(event) = worker_receiver.recv().await {
+        push_worker_event(
+            &mut events,
+            event_sender.as_ref(),
+            team_id,
+            teammate_name,
+            event,
+        );
+    }
+    let response = response?;
+    Ok(TeamExecution {
+        response: redact_secrets(&response.content),
+        events,
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -1737,7 +1980,10 @@ fn redact_key_value_token(input: &str, key: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, Instant};
+    use std::{
+        sync::{Arc, Mutex},
+        time::{Duration, Instant},
+    };
 
     use artesian_core::{AgentCatalogEntry, AgentModel};
     use artesian_test_support::TempDir;
@@ -2082,6 +2328,150 @@ mod tests {
                 .is_empty(),
             "team cleanup should leave no registry entries"
         );
+    }
+
+    #[tokio::test]
+    async fn native_dispatch_seam_selects_native_when_binding_advertises_it() {
+        let tempdir = TempDir::new("native-dispatch-advertised");
+        let config = runtime_config(
+            tempdir.path(),
+            Vec::new(),
+            vec![binding(
+                Role::Worker,
+                "opencode",
+                None,
+                "opencode",
+                Vec::new(),
+            )],
+            catalog(vec![entry(
+                "opencode",
+                true,
+                vec![model("opencode-default", true)],
+            )]),
+        );
+        let native_subagents = NativeSubagentConfig {
+            enabled: true,
+            profiles: vec![NativeSubagentProfile {
+                role: Role::Worker,
+                agent: "opencode".to_string(),
+                model: None,
+                native_subagents: true,
+            }],
+            ..NativeSubagentConfig::default()
+        };
+        let delegation = Delegation::new(config.bindings[0].clone(), "do work");
+        let strategies = Arc::new(Mutex::new(Vec::new()));
+        let dispatcher = RecordingDispatcher {
+            strategies: strategies.clone(),
+        };
+
+        let execution = TeamRuntime::execute_delegation_with_dispatcher(
+            config,
+            native_subagents,
+            delegation,
+            "team",
+            "worker",
+            None,
+            &dispatcher,
+        )
+        .await
+        .expect("stub dispatcher should execute");
+
+        assert_eq!(execution.response, "stubbed");
+        assert_eq!(
+            strategies.lock().unwrap().as_slice(),
+            &[DelegationDispatchStrategy::NativeSubagent(
+                NativeSubagentRuntimeKind::Opencode
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn native_dispatch_seam_falls_back_without_capability() {
+        let tempdir = TempDir::new("native-dispatch-fallback");
+        let config = runtime_config(
+            tempdir.path(),
+            Vec::new(),
+            vec![binding(Role::Worker, "echo", None, "echo", Vec::new())],
+            catalog(vec![entry("echo", true, Vec::new())]),
+        );
+        let delegation = Delegation::new(config.bindings[0].clone(), "do work");
+        let strategies = Arc::new(Mutex::new(Vec::new()));
+        let dispatcher = RecordingDispatcher {
+            strategies: strategies.clone(),
+        };
+
+        TeamRuntime::execute_delegation_with_dispatcher(
+            config,
+            NativeSubagentConfig::default(),
+            delegation,
+            "team",
+            "worker",
+            None,
+            &dispatcher,
+        )
+        .await
+        .expect("stub dispatcher should execute");
+
+        assert_eq!(
+            strategies.lock().unwrap().as_slice(),
+            &[DelegationDispatchStrategy::FreshProcess]
+        );
+    }
+
+    #[tokio::test]
+    async fn native_dispatch_auto_detects_opencode_background_subagents() {
+        let tempdir = TempDir::new("native-dispatch-autodetect");
+        let config = runtime_config(
+            tempdir.path(),
+            Vec::new(),
+            vec![binding(
+                Role::Worker,
+                "opencode",
+                None,
+                "opencode",
+                Vec::new(),
+            )],
+            catalog(vec![entry(
+                "opencode",
+                true,
+                vec![model("opencode-default", true)],
+            )]),
+        );
+        let native_subagents =
+            NativeSubagentConfig::enabled_with_detection(NativeSubagentDetection {
+                opencode_background_subagents: true,
+                ..NativeSubagentDetection::default()
+            });
+
+        assert_eq!(
+            select_delegation_dispatch_strategy(&native_subagents, &config.bindings[0]),
+            DelegationDispatchStrategy::NativeSubagent(NativeSubagentRuntimeKind::Opencode)
+        );
+    }
+
+    struct RecordingDispatcher {
+        strategies: Arc<Mutex<Vec<DelegationDispatchStrategy>>>,
+    }
+
+    impl DelegationDispatcher for RecordingDispatcher {
+        fn dispatch<'a>(
+            &'a self,
+            strategy: DelegationDispatchStrategy,
+            _config: TeamRuntimeConfig,
+            _delegation: Delegation,
+            _team_id: &'a str,
+            _teammate_name: &'a str,
+            _event_sender: Option<mpsc::UnboundedSender<TeamWorkerEvent>>,
+        ) -> DelegationDispatchFuture<'a> {
+            self.strategies.lock().unwrap().push(strategy);
+            Box::pin(async {
+                Ok(TeamExecution {
+                    response: "stubbed".to_string(),
+                    events: Vec::new(),
+                })
+            })
+        }
     }
 
     fn runtime_config(

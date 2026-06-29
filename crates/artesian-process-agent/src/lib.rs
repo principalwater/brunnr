@@ -44,12 +44,47 @@ const DEFAULT_TERMINATION_GRACE: Duration = Duration::from_secs(2);
 const DEFAULT_MAX_CONCURRENT_SPAWNS: usize = 32;
 const REGISTRY_VERSION: u32 = 1;
 const MAX_PROCESS_ERROR_OUTPUT_CHARS: usize = 2_048;
+pub const OPENCODE_BACKGROUND_SUBAGENTS_ENV: &str = "OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS";
+pub const ARTESIAN_NATIVE_SUBAGENTS_ENV: &str = "ARTESIAN_NATIVE_SUBAGENTS";
+pub const ARTESIAN_CLAUDE_NATIVE_SUBAGENTS_ENV: &str = "ARTESIAN_CLAUDE_NATIVE_SUBAGENTS";
+pub const ARTESIAN_CODEX_NATIVE_SUBAGENTS_ENV: &str = "ARTESIAN_CODEX_NATIVE_SUBAGENTS";
+
+/// Native background-subagent mechanism exposed by an agent runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NativeSubagentRuntimeKind {
+    Claude,
+    Codex,
+    Opencode,
+}
+
+/// Runtime capability signals used by Flume's native-subagent dispatch seam.
+///
+/// Defaults are inert. Call [`NativeSubagentDetection::from_env`] only when the caller has opted
+/// into auto-detection.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NativeSubagentDetection {
+    pub claude_native_dispatch: bool,
+    pub codex_native_dispatch: bool,
+    pub opencode_background_subagents: bool,
+}
+
+impl NativeSubagentDetection {
+    pub fn from_env() -> Self {
+        Self {
+            claude_native_dispatch: truthy_env(ARTESIAN_CLAUDE_NATIVE_SUBAGENTS_ENV),
+            codex_native_dispatch: truthy_env(ARTESIAN_CODEX_NATIVE_SUBAGENTS_ENV),
+            opencode_background_subagents: truthy_env(OPENCODE_BACKGROUND_SUBAGENTS_ENV),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcessAgentConfig {
     pub agent_id: String,
     pub command: String,
     pub args: Vec<String>,
+    pub env: Vec<(String, String)>,
     pub working_dir: Option<PathBuf>,
     pub timeout: Duration,
     pub max_lifetime: Duration,
@@ -66,6 +101,7 @@ impl ProcessAgentConfig {
             agent_id: String::new(),
             command: command.into(),
             args: Vec::new(),
+            env: Vec::new(),
             working_dir: None,
             timeout: DEFAULT_TIMEOUT,
             max_lifetime: DEFAULT_MAX_LIFETIME,
@@ -84,6 +120,11 @@ impl ProcessAgentConfig {
 
     pub fn with_args(mut self, args: Vec<String>) -> Self {
         self.args = args;
+        self
+    }
+
+    pub fn with_env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.env.push((key.into(), value.into()));
         self
     }
 
@@ -589,6 +630,42 @@ fn parse_model_list(text: &str) -> Vec<String> {
         .collect()
 }
 
+pub fn detect_native_subagent_runtime(
+    agent_id: &str,
+    command: &str,
+    detection: NativeSubagentDetection,
+) -> Option<NativeSubagentRuntimeKind> {
+    let agent = normalize_agent_id(agent_id);
+    let command = normalize_agent_id(command_basename(command));
+    match (agent.as_str(), command.as_str()) {
+        ("claude" | "claude-code", "claude" | "claude-code")
+            if detection.claude_native_dispatch =>
+        {
+            Some(NativeSubagentRuntimeKind::Claude)
+        }
+        ("codex", "codex") if detection.codex_native_dispatch => {
+            Some(NativeSubagentRuntimeKind::Codex)
+        }
+        ("opencode", "opencode") if detection.opencode_background_subagents => {
+            Some(NativeSubagentRuntimeKind::Opencode)
+        }
+        _ => None,
+    }
+}
+
+pub fn apply_native_subagent_runtime_hints(
+    config: ProcessAgentConfig,
+    kind: NativeSubagentRuntimeKind,
+) -> ProcessAgentConfig {
+    let config = config.with_env(ARTESIAN_NATIVE_SUBAGENTS_ENV, "1");
+    match kind {
+        NativeSubagentRuntimeKind::Opencode => {
+            config.with_env(OPENCODE_BACKGROUND_SUBAGENTS_ENV, "1")
+        }
+        NativeSubagentRuntimeKind::Claude | NativeSubagentRuntimeKind::Codex => config,
+    }
+}
+
 fn curated_static_models(agent_id: &str) -> &'static [&'static str] {
     match normalize_agent_id(agent_id).as_str() {
         "claude" | "claude-code" => &["claude-haiku", "claude-opus", "claude-sonnet"],
@@ -626,6 +703,18 @@ fn sanitize_env_token(agent_id: &str) -> String {
             }
         })
         .collect()
+}
+
+fn truthy_env(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
 }
 
 fn command_reachable(command: &str) -> bool {
@@ -1027,6 +1116,9 @@ async fn run_process(
     configure_process_group(&mut command);
     for arg in &invocation.args {
         command.arg(arg);
+    }
+    for (key, value) in &config.env {
+        command.env(key, value);
     }
     if let Some(working_dir) = &context.working_dir {
         command.current_dir(working_dir);
