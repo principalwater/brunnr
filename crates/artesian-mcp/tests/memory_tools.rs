@@ -8,7 +8,8 @@ use std::{
 };
 
 use aquifer::{
-    MemoryResult, SqliteVecVectorStore, TextEmbedder, VectorMemoryBackend, VectorMemoryConfig,
+    FilesBackend, MemoryBackend, MemoryQuery, MemoryResult, SqliteVecVectorStore, TextEmbedder,
+    VectorMemoryBackend, VectorMemoryConfig,
 };
 use artesian_core::{AgentBinding, AgentCatalog, AgentCatalogEntry, AgentModel, Mode, Role};
 use artesian_mcp::{
@@ -21,6 +22,7 @@ use artesian_mcp::{
     ToolsFindRequest,
 };
 use artesian_test_support::TempDir;
+use flume::{AgentRoutingProfile, RoutingConfig, ROUTING_TRACE_TAG};
 use rmcp::handler::server::wrapper::Parameters;
 use tokio_util::sync::CancellationToken;
 
@@ -651,6 +653,11 @@ async fn orchestrate_bind_rejects_unavailable_model() {
             command: Some("sh".to_string()),
             args: None,
             timeout_seconds: None,
+            capabilities: None,
+            cost_weight: None,
+            perf_estimate: None,
+            read_only_auditor: None,
+            frontier: None,
         }))
         .await;
     let Err(error) = result else {
@@ -691,6 +698,11 @@ async fn orchestrate_bind_uses_cached_catalog_models() {
             command: Some("sh".to_string()),
             args: None,
             timeout_seconds: None,
+            capabilities: None,
+            cost_weight: None,
+            perf_estimate: None,
+            read_only_auditor: None,
+            frontier: None,
         }))
         .await
         .expect("cached catalog model should bind")
@@ -733,6 +745,7 @@ async fn orchestrate_delegate_timeout_uses_supervised_cleanup() {
             DelegateRequest {
                 role: "worker".to_string(),
                 task: "Keep a child process alive until timeout".to_string(),
+                required_capabilities: None,
                 max_output_chars: None,
             },
             CancellationToken::new(),
@@ -772,6 +785,7 @@ async fn orchestrate_delegate_error_redacts_process_secrets() {
             DelegateRequest {
                 role: "worker".to_string(),
                 task: "Fail with a secret-bearing stderr".to_string(),
+                required_capabilities: None,
                 max_output_chars: None,
             },
             CancellationToken::new(),
@@ -818,6 +832,7 @@ async fn orchestrate_delegate_tolerates_unread_stdin_and_redacts() {
             DelegateRequest {
                 role: "worker".to_string(),
                 task: big_task,
+                required_capabilities: None,
                 max_output_chars: None,
             },
             CancellationToken::new(),
@@ -860,6 +875,7 @@ async fn orchestrate_delegate_truncates_success_output_to_cap() {
             DelegateRequest {
                 role: "worker".to_string(),
                 task: "Return long output".to_string(),
+                required_capabilities: None,
                 max_output_chars: Some(10),
             },
             CancellationToken::new(),
@@ -1222,12 +1238,14 @@ async fn team_run_blocks_returns_all_results_and_emits_progress() {
                         title: None,
                         role: Some("worker-a".to_string()),
                         agent: None,
+                        required_capabilities: None,
                     },
                     TeamRunTaskRequest {
                         instruction: "Second worker task".to_string(),
                         title: None,
                         role: Some("worker-a".to_string()),
                         agent: None,
+                        required_capabilities: None,
                     },
                 ],
                 timeout_secs: Some(5),
@@ -1288,6 +1306,7 @@ async fn team_run_truncates_long_worker_output_to_cap() {
                     title: None,
                     role: Some("worker-a".to_string()),
                     agent: None,
+                    required_capabilities: None,
                 }],
                 timeout_secs: Some(5),
                 poll_interval_ms: Some(50),
@@ -1304,6 +1323,248 @@ async fn team_run_truncates_long_worker_output_to_cap() {
     assert_eq!(response.results.len(), 1);
     assert_eq!(response.results[0].output.as_deref(), Some("abcdefgh"));
     assert!(response.results[0].output_truncated);
+    assert_eq!(response.results[0].envelope.status, "done");
+    assert_eq!(response.results[0].envelope.summary, "abcdefgh");
+    assert_eq!(response.results[0].envelope.artifacts.len(), 1);
+    assert!(response.results[0].envelope.token_count >= 1);
+}
+
+#[tokio::test]
+async fn team_run_capability_filter_excludes_non_matching_agent() {
+    let tempdir = TempDir::new("mcp-routing-capability");
+    let server = routing_test_server(
+        &tempdir,
+        routing_bindings(
+            "printf 'cheap-code\\n'",
+            "printf 'strong-code\\n'",
+            "printf 'math-only\\n'",
+        ),
+        routing_config(),
+    );
+
+    let response = server
+        .team_run_inner(
+            TeamRunRequest {
+                team_id: Some("team".to_string()),
+                team_name: None,
+                tasks: vec![TeamRunTaskRequest {
+                    instruction: "Implement parser and update tests then report results"
+                        .to_string(),
+                    title: None,
+                    role: None,
+                    agent: None,
+                    required_capabilities: Some(vec!["reason".to_string()]),
+                }],
+                timeout_secs: Some(5),
+                poll_interval_ms: Some(50),
+                max_output_chars: Some(100),
+            },
+            CancellationToken::new(),
+            None,
+        )
+        .await
+        .expect("capable worker should run")
+        .0;
+
+    assert_eq!(response.outcome, "completed");
+    assert_eq!(response.results[0].agent, "strong-sh");
+    assert_eq!(response.results[0].output.as_deref(), Some("strong-code"));
+}
+
+#[tokio::test]
+async fn team_run_difficulty_gate_routes_trivial_direct_and_hard_frontier() {
+    let tempdir = TempDir::new("mcp-routing-difficulty");
+    let touched = tempdir.join("worker-ran");
+    let server = routing_test_server(
+        &tempdir,
+        routing_bindings(
+            &format!("touch '{}'; printf 'cheap\\n'", touched.display()),
+            "printf 'frontier\\n'",
+            "printf 'math\\n'",
+        ),
+        routing_config(),
+    );
+
+    let response = server
+        .team_run_inner(
+            TeamRunRequest {
+                team_id: Some("team".to_string()),
+                team_name: None,
+                tasks: vec![
+                    TeamRunTaskRequest {
+                        instruction: "Say ok".to_string(),
+                        title: None,
+                        role: None,
+                        agent: None,
+                        required_capabilities: None,
+                    },
+                    TeamRunTaskRequest {
+                        instruction:
+                            "Production security migration: update auth, verify rollout, and summarize risk"
+                                .to_string(),
+                        title: None,
+                        role: None,
+                        agent: None,
+                        required_capabilities: Some(vec!["code".to_string()]),
+                    },
+                ],
+                timeout_secs: Some(5),
+                poll_interval_ms: Some(50),
+                max_output_chars: Some(200),
+            },
+            CancellationToken::new(),
+            None,
+        )
+        .await
+        .expect("routing run should complete")
+        .0;
+
+    assert_eq!(response.outcome, "completed");
+    assert_eq!(response.results[0].status, "master-direct");
+    assert_eq!(response.results[0].agent, "master");
+    assert!(
+        !touched.exists(),
+        "trivial task should not spawn cheap worker"
+    );
+    assert_eq!(response.results[1].agent, "strong-sh");
+    assert_eq!(response.results[1].output.as_deref(), Some("frontier"));
+}
+
+#[tokio::test]
+async fn routing_trace_is_written_and_knn_biases_next_similar_task() {
+    let tempdir = TempDir::new("mcp-routing-trace");
+    write_routing_definitions(tempdir.path());
+    let backend = Arc::new(FilesBackend::new(tempdir.join("memory")));
+    let server = MemoryServer::with_backend(backend.clone())
+        .with_mode(Mode::Orchestrate)
+        .with_task_root(tempdir.join("tasks"))
+        .with_repo_root(tempdir.path())
+        .with_process_registry_dir(tempdir.join("spawns"))
+        .with_bindings(routing_bindings(
+            "printf 'cheap\\n'",
+            "printf 'strong\\n'",
+            "printf 'math\\n'",
+        ))
+        .with_routing_config(routing_config());
+    let first_task = "Refactor module and update tests then summarize routing trace bias";
+
+    let first = server
+        .team_run_inner(
+            TeamRunRequest {
+                team_id: Some("team-a".to_string()),
+                team_name: None,
+                tasks: vec![TeamRunTaskRequest {
+                    instruction: first_task.to_string(),
+                    title: None,
+                    role: None,
+                    agent: Some("strong-sh".to_string()),
+                    required_capabilities: Some(vec!["code".to_string()]),
+                }],
+                timeout_secs: Some(5),
+                poll_interval_ms: Some(50),
+                max_output_chars: Some(100),
+            },
+            CancellationToken::new(),
+            None,
+        )
+        .await
+        .expect("first routed task should run")
+        .0;
+    assert_eq!(first.results[0].agent, "strong-sh");
+
+    let mut query = MemoryQuery::new(first_task).with_limit(10);
+    query.tags = vec![ROUTING_TRACE_TAG.to_string()];
+    let traces = backend
+        .find(query)
+        .await
+        .expect("routing trace should query");
+    assert_eq!(traces.len(), 1);
+    assert_eq!(
+        traces[0]
+            .record
+            .metadata
+            .get("chosen_agent")
+            .map(String::as_str),
+        Some("strong-sh")
+    );
+    assert_eq!(
+        traces[0]
+            .record
+            .metadata
+            .get("verify_outcome")
+            .map(String::as_str),
+        Some("pass")
+    );
+
+    let second = server
+        .team_run_inner(
+            TeamRunRequest {
+                team_id: Some("team-b".to_string()),
+                team_name: None,
+                tasks: vec![TeamRunTaskRequest {
+                    instruction:
+                        "Refactor module and update tests then summarize routing trace bias again"
+                            .to_string(),
+                    title: None,
+                    role: None,
+                    agent: None,
+                    required_capabilities: Some(vec!["code".to_string()]),
+                }],
+                timeout_secs: Some(5),
+                poll_interval_ms: Some(50),
+                max_output_chars: Some(100),
+            },
+            CancellationToken::new(),
+            None,
+        )
+        .await
+        .expect("second routed task should run")
+        .0;
+
+    assert_eq!(second.results[0].agent, "strong-sh");
+    assert_eq!(second.results[0].output.as_deref(), Some("strong"));
+}
+
+#[tokio::test]
+async fn team_run_without_routing_config_keeps_legacy_worker_dispatch() {
+    let tempdir = TempDir::new("mcp-routing-backcompat");
+    write_team_definitions(tempdir.path());
+    let server = MemoryServer::new(tempdir.join("memory"))
+        .with_mode(Mode::Orchestrate)
+        .with_task_root(tempdir.join("tasks"))
+        .with_repo_root(tempdir.path())
+        .with_process_registry_dir(tempdir.join("spawns"))
+        .with_bindings(team_bindings(
+            "printf 'worker-result\\n'",
+            "printf 'judge-ok\\n'",
+        ));
+
+    let response = server
+        .team_run_inner(
+            TeamRunRequest {
+                team_id: Some("team".to_string()),
+                team_name: None,
+                tasks: vec![TeamRunTaskRequest {
+                    instruction: "Say ok".to_string(),
+                    title: None,
+                    role: Some("worker-a".to_string()),
+                    agent: None,
+                    required_capabilities: None,
+                }],
+                timeout_secs: Some(5),
+                poll_interval_ms: Some(50),
+                max_output_chars: Some(100),
+            },
+            CancellationToken::new(),
+            None,
+        )
+        .await
+        .expect("legacy dispatch should complete")
+        .0;
+
+    assert_eq!(response.results[0].status, "done");
+    assert_eq!(response.results[0].agent, "worker-sh");
+    assert_eq!(response.results[0].output.as_deref(), Some("worker-result"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1342,6 +1603,7 @@ async fn team_run_cancellation_aborts_promptly_and_reaps_workers() {
                     title: None,
                     role: Some("worker-a".to_string()),
                     agent: None,
+                    required_capabilities: None,
                 }],
                 timeout_secs: Some(30),
                 poll_interval_ms: Some(50),
@@ -1555,6 +1817,24 @@ fn write_team_definitions(root: &std::path::Path) {
     .expect("judge definition should write");
 }
 
+fn write_routing_definitions(root: &std::path::Path) {
+    let definitions = root.join(".agent").join("agents");
+    fs::create_dir_all(&definitions).expect("definition dir should exist");
+    for (file, name, agent) in [
+        ("cheap-code.md", "cheap-code", "cheap-sh"),
+        ("strong-code.md", "strong-code", "strong-sh"),
+        ("math-worker.md", "math-worker", "math-sh"),
+    ] {
+        fs::write(
+            definitions.join(file),
+            format!(
+                "---\nname: {name}\nkind: worker\ndescription: Routing test worker.\nagent: {agent}\n---\nRouting prompt.\n"
+            ),
+        )
+        .expect("routing definition should write");
+    }
+}
+
 fn team_bindings(worker_script: &str, judge_script: &str) -> Vec<AgentBinding> {
     vec![
         AgentBinding {
@@ -1574,6 +1854,83 @@ fn team_bindings(worker_script: &str, judge_script: &str) -> Vec<AgentBinding> {
             timeout_seconds: Some(2),
         },
     ]
+}
+
+fn routing_bindings(
+    cheap_script: &str,
+    strong_script: &str,
+    math_script: &str,
+) -> Vec<AgentBinding> {
+    vec![
+        routing_binding("cheap-sh", cheap_script),
+        routing_binding("strong-sh", strong_script),
+        routing_binding("math-sh", math_script),
+    ]
+}
+
+fn routing_binding(agent: &str, script: &str) -> AgentBinding {
+    AgentBinding {
+        role: Role::Worker,
+        agent: agent.to_string(),
+        model: None,
+        command: Some("sh".to_string()),
+        args: vec!["-c".to_string(), script.to_string()],
+        timeout_seconds: Some(5),
+    }
+}
+
+fn routing_config() -> RoutingConfig {
+    RoutingConfig {
+        profiles: vec![
+            AgentRoutingProfile {
+                role: Role::Worker,
+                agent: "cheap-sh".to_string(),
+                model: None,
+                capabilities: vec!["code".to_string()],
+                cost_weight: Some(1.0),
+                perf_estimate: Some(0.7),
+                read_only_auditor: false,
+                frontier: false,
+            },
+            AgentRoutingProfile {
+                role: Role::Worker,
+                agent: "strong-sh".to_string(),
+                model: None,
+                capabilities: vec!["code".to_string(), "reason".to_string()],
+                cost_weight: Some(2.0),
+                perf_estimate: Some(0.95),
+                read_only_auditor: false,
+                frontier: true,
+            },
+            AgentRoutingProfile {
+                role: Role::Worker,
+                agent: "math-sh".to_string(),
+                model: None,
+                capabilities: vec!["math".to_string()],
+                cost_weight: Some(0.5),
+                perf_estimate: Some(0.6),
+                read_only_auditor: false,
+                frontier: false,
+            },
+        ],
+        cost_epsilon: 0.1,
+        trace_limit: 100,
+    }
+}
+
+fn routing_test_server(
+    tempdir: &TempDir,
+    bindings: Vec<AgentBinding>,
+    routing: RoutingConfig,
+) -> MemoryServer {
+    write_routing_definitions(tempdir.path());
+    MemoryServer::new(tempdir.join("memory"))
+        .with_mode(Mode::Orchestrate)
+        .with_task_root(tempdir.join("tasks"))
+        .with_repo_root(tempdir.path())
+        .with_process_registry_dir(tempdir.join("spawns"))
+        .with_bindings(bindings)
+        .with_routing_config(routing)
 }
 
 const TEST_DIMENSIONS: usize = 8;

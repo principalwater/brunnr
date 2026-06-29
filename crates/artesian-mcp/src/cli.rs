@@ -68,63 +68,77 @@ pub async fn run() -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
-    let config = load_runtime_config(&args)?;
+    let (config, routing) = load_runtime_config(&args)?;
     match args.transport {
-        TransportArg::Stdio => crate::run_stdio_with_artesian_config(config).await,
-        TransportArg::Http => run_http_transport(config, &args.bind).await,
+        TransportArg::Stdio => {
+            crate::run_stdio_with_artesian_config_and_routing(config, routing).await
+        }
+        TransportArg::Http => run_http_transport(config, routing, &args.bind).await,
     }
 }
 
 #[cfg(feature = "http")]
-async fn run_http_transport(config: ArtesianConfig, bind: &str) -> anyhow::Result<()> {
+async fn run_http_transport(
+    config: ArtesianConfig,
+    routing: flume::RoutingConfig,
+    bind: &str,
+) -> anyhow::Result<()> {
     let addr: std::net::SocketAddr = bind
         .parse()
         .map_err(|error| anyhow::anyhow!("invalid --bind {bind:?}: {error}"))?;
-    crate::run_http(config, addr).await
+    crate::run_http_with_routing(config, routing, addr).await
 }
 
 #[cfg(not(feature = "http"))]
-async fn run_http_transport(_config: ArtesianConfig, _bind: &str) -> anyhow::Result<()> {
+async fn run_http_transport(
+    _config: ArtesianConfig,
+    _routing: flume::RoutingConfig,
+    _bind: &str,
+) -> anyhow::Result<()> {
     anyhow::bail!("--transport http requires building artesian-mcp with --features http")
 }
 
-fn load_runtime_config(args: &Args) -> anyhow::Result<ArtesianConfig> {
+fn load_runtime_config(args: &Args) -> anyhow::Result<(ArtesianConfig, flume::RoutingConfig)> {
     if let Some(path) = &args.config {
         let text = fs::read_to_string(path)?;
-        return Ok(ArtesianConfig::from_toml(&text)?);
+        let routing = crate::routing_config_from_toml(&text)?;
+        return Ok((ArtesianConfig::from_toml(&text)?, routing));
     }
 
-    Ok(ArtesianConfig {
-        mode: Mode::Memory,
-        memory: MemoryConfig {
-            backend: args.backend.into(),
-            root: args.root.display().to_string(),
-            collection: args.collection.clone(),
-            project: args.project.clone(),
-            qdrant_url: args
-                .qdrant_url
-                .clone()
-                .or_else(|| env::var("QDRANT_URL").ok()),
-            qdrant_rest_url: args
-                .qdrant_rest_url
-                .clone()
-                .or_else(|| env::var("QDRANT_REST_URL").ok()),
-            qdrant_api_key_env: Some(args.qdrant_api_key_env.clone()),
-            qdrant_api_key_file: args.qdrant_api_key_file.clone(),
-            local_rerank_enabled: true,
-            hyde_enabled: false,
-            multi_query_enabled: false,
-            debate_enabled: false,
-            llm_consolidation_enabled: false,
-            rerank: false,
-            rerank_candidates: 0,
-            semantic_cache: Default::default(),
-            track_access: true,
-            track_savings: true,
+    Ok((
+        ArtesianConfig {
+            mode: Mode::Memory,
+            memory: MemoryConfig {
+                backend: args.backend.into(),
+                root: args.root.display().to_string(),
+                collection: args.collection.clone(),
+                project: args.project.clone(),
+                qdrant_url: args
+                    .qdrant_url
+                    .clone()
+                    .or_else(|| env::var("QDRANT_URL").ok()),
+                qdrant_rest_url: args
+                    .qdrant_rest_url
+                    .clone()
+                    .or_else(|| env::var("QDRANT_REST_URL").ok()),
+                qdrant_api_key_env: Some(args.qdrant_api_key_env.clone()),
+                qdrant_api_key_file: args.qdrant_api_key_file.clone(),
+                local_rerank_enabled: true,
+                hyde_enabled: false,
+                multi_query_enabled: false,
+                debate_enabled: false,
+                llm_consolidation_enabled: false,
+                rerank: false,
+                rerank_candidates: 0,
+                semantic_cache: Default::default(),
+                track_access: true,
+                track_savings: true,
+            },
+            agents: Vec::new(),
+            coordination: Default::default(),
+            acc: Default::default(),
+            dream_on_compact: false,
         },
-        agents: Vec::new(),
-        coordination: Default::default(),
-        acc: Default::default(),
-        dream_on_compact: false,
-    })
+        flume::RoutingConfig::default(),
+    ))
 }

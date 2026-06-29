@@ -3,7 +3,8 @@
 pub mod cli;
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
+    hash::{Hash, Hasher},
     path::PathBuf,
     str::FromStr,
     sync::{Arc, Mutex},
@@ -30,9 +31,11 @@ use artesian_process_agent::{
     ProcessAgentConfig, ProcessSupervisor,
 };
 use flume::{
-    load_role_definitions, loop_core, role_summaries, Lane, LaneBudget, LaneContract, TeamCreate,
-    TeamGcOptions, TeamLaneAdd, TeamLaneAssignTask, TeamMessage, TeamMessageKind, TeamRuntime,
-    TeamRuntimeConfig, TeamSpawn, TeamTaskAdd, TeamTaskClaim, TeamTaskComplete,
+    classify_task_difficulty, covers_capabilities, load_role_definitions, loop_core,
+    normalize_capabilities, role_summaries, strip_mutating_tools, AgentRoutingProfile, Lane,
+    LaneBudget, LaneContract, RoutingConfig, RoutingTier, TeamCreate, TeamGcOptions, TeamLaneAdd,
+    TeamLaneAssignTask, TeamMessage, TeamMessageKind, TeamRuntime, TeamRuntimeConfig, TeamSpawn,
+    TeamTaskAdd, TeamTaskClaim, TeamTaskComplete, ROUTING_TRACE_TAG,
 };
 use headgate::{
     count_tokens, load_savings_rollup, record_savings, CcsSchema, CommittedContextState,
@@ -103,6 +106,7 @@ pub struct MemoryServer {
     router_enabled: bool,
     mode: Mode,
     bindings: Arc<Mutex<Vec<AgentBinding>>>,
+    routing: Arc<Mutex<RoutingConfig>>,
     catalog: Arc<Mutex<AgentCatalog>>,
     delegate_results: Arc<Mutex<HashMap<String, DelegateRecord>>>,
     team_runtime: Arc<AsyncMutex<TeamRuntime>>,
@@ -201,6 +205,7 @@ impl MemoryServer {
             router_enabled: false,
             mode: Mode::Memory,
             bindings: Arc::new(Mutex::new(Vec::new())),
+            routing: Arc::new(Mutex::new(RoutingConfig::default())),
             catalog: Arc::new(Mutex::new(AgentCatalog::default())),
             delegate_results: Arc::new(Mutex::new(HashMap::new())),
             team_runtime: Arc::new(AsyncMutex::new(TeamRuntime::new(TeamRuntimeConfig::new(
@@ -232,6 +237,7 @@ impl MemoryServer {
         self.mode = config.mode;
         self.acc = config.acc.clone();
         self.bindings = Arc::new(Mutex::new(config.agents.clone()));
+        self.routing = Arc::new(Mutex::new(RoutingConfig::default()));
         let mut catalog = fallback_agent_catalog(&config.agents);
         self.task_root = PathBuf::from(&config.memory.root).join("tasks");
         self.repo_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -282,6 +288,27 @@ impl MemoryServer {
         )));
         self.catalog = Arc::new(Mutex::new(catalog));
         self.bindings = Arc::new(Mutex::new(bindings));
+        self
+    }
+
+    pub fn with_routing_config(mut self, routing: RoutingConfig) -> Self {
+        self.routing = Arc::new(Mutex::new(routing));
+        let bindings = self
+            .bindings
+            .lock()
+            .map(|bindings| bindings.clone())
+            .unwrap_or_default();
+        let catalog = self
+            .catalog
+            .lock()
+            .map(|catalog| catalog.clone())
+            .unwrap_or_default();
+        let definitions = load_role_definitions(&self.repo_root).unwrap_or_default();
+        self.team_runtime = Arc::new(AsyncMutex::new(self.build_team_runtime(
+            bindings,
+            catalog,
+            definitions,
+        )));
         self
     }
 
@@ -444,6 +471,27 @@ impl MemoryServer {
             max_lifetime: self.process_defaults.max_lifetime,
             termination_grace: self.process_defaults.termination_grace,
         })
+    }
+
+    fn routing_config(&self) -> Result<RoutingConfig, ErrorData> {
+        self.routing
+            .lock()
+            .map(|routing| routing.clone())
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))
+    }
+
+    fn upsert_routing_profile(&self, profile: AgentRoutingProfile) -> Result<(), ErrorData> {
+        let mut routing = self
+            .routing
+            .lock()
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        routing.profiles.retain(|existing| {
+            !(existing.role == profile.role
+                && existing.agent == profile.agent
+                && existing.model == profile.model)
+        });
+        routing.profiles.push(profile);
+        Ok(())
     }
 }
 
@@ -1753,21 +1801,71 @@ pub struct BindRequest {
     pub command: Option<String>,
     pub args: Option<Vec<String>>,
     pub timeout_seconds: Option<u64>,
+    #[serde(default)]
+    pub capabilities: Option<Vec<String>>,
+    #[serde(default)]
+    pub cost_weight: Option<f32>,
+    #[serde(default)]
+    pub perf_estimate: Option<f32>,
+    #[serde(default)]
+    pub read_only_auditor: Option<bool>,
+    #[serde(default)]
+    pub frontier: Option<bool>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct BindResponse {
     pub binding: AgentBinding,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing_profile: Option<RoutingProfileResponse>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct DelegateRequest {
     pub role: String,
     pub task: String,
+    /// Optional manifest requirements for the delegated task.
+    #[serde(default)]
+    pub required_capabilities: Option<Vec<String>>,
     /// Maximum returned worker-output characters. Defaults to 4000; the full process output
     /// remains internal to the delegated task path.
     #[serde(default)]
     pub max_output_chars: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+pub struct WorkerOutputEnvelope {
+    pub status: String,
+    pub summary: String,
+    pub artifacts: Vec<String>,
+    pub token_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
+pub struct RoutingProfileResponse {
+    pub role: String,
+    pub agent: String,
+    pub model: Option<String>,
+    pub capabilities: Vec<String>,
+    pub cost_weight: Option<f32>,
+    pub perf_estimate: Option<f32>,
+    pub read_only_auditor: bool,
+    pub frontier: bool,
+}
+
+impl From<&AgentRoutingProfile> for RoutingProfileResponse {
+    fn from(profile: &AgentRoutingProfile) -> Self {
+        Self {
+            role: profile.role.canonical_alias().to_string(),
+            agent: profile.agent.clone(),
+            model: profile.model.clone(),
+            capabilities: profile.effective_capabilities(),
+            cost_weight: profile.cost_weight,
+            perf_estimate: profile.perf_estimate,
+            read_only_auditor: profile.read_only_auditor,
+            frontier: profile.frontier,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
@@ -1777,6 +1875,7 @@ pub struct DelegateResponse {
     pub role: String,
     pub agent: String,
     pub model: Option<String>,
+    pub envelope: WorkerOutputEnvelope,
     pub result: Option<String>,
     pub result_truncated: bool,
 }
@@ -1793,6 +1892,8 @@ pub struct StatusRequest {
 pub struct StatusResponse {
     pub task_id: String,
     pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub envelope: Option<WorkerOutputEnvelope>,
     pub result: Option<String>,
     pub result_truncated: bool,
 }
@@ -1862,6 +1963,9 @@ pub struct TeamRunTaskRequest {
     pub role: Option<String>,
     /// Optional preferred agent id; used to choose among matching role definitions.
     pub agent: Option<String>,
+    /// Optional manifest requirements for the task. Empty/omitted means every candidate is eligible.
+    #[serde(default)]
+    pub required_capabilities: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
@@ -1882,6 +1986,7 @@ pub struct TeamRunTaskResult {
     pub role: String,
     pub agent: String,
     pub model: Option<String>,
+    pub envelope: WorkerOutputEnvelope,
     pub output: Option<String>,
     pub output_truncated: bool,
     pub error: Option<String>,
@@ -1949,6 +2054,7 @@ pub struct TeamTaskAwaitResponse {
     pub outcome: String,
     pub elapsed_ms: u64,
     pub tasks: Vec<serde_json::Value>,
+    pub envelopes: Vec<WorkerOutputEnvelope>,
     pub tasks_truncated: bool,
 }
 
@@ -2093,25 +2199,41 @@ impl BoundedText {
 }
 
 struct ResolvedTeamRunTask {
-    definition: String,
+    order: usize,
+    dispatch: TeamRunDispatch,
     title: String,
     instruction: String,
+    tier: RoutingTier,
+    required_capabilities: Vec<String>,
+}
+
+enum TeamRunDispatch {
+    Delegate { definition: String },
+    MasterDirect,
 }
 
 struct TeamRunTaskMeta {
+    order: usize,
     task_id: String,
     role: String,
     agent: String,
     model: Option<String>,
+    instruction: String,
+    tier: RoutingTier,
+    trace_enabled: bool,
 }
 
 impl Clone for TeamRunTaskMeta {
     fn clone(&self) -> Self {
         Self {
+            order: self.order,
             task_id: self.task_id.clone(),
             role: self.role.clone(),
             agent: self.agent.clone(),
             model: self.model.clone(),
+            instruction: self.instruction.clone(),
+            tier: self.tier,
+            trace_enabled: self.trace_enabled,
         }
     }
 }
@@ -2127,6 +2249,68 @@ struct TeamRunPlan {
 struct TeamRunRunning {
     meta: TeamRunTaskMeta,
     handle: tokio::task::JoinHandle<flume::FlumeResult<flume::TeamExecution>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RoutingToml {
+    #[serde(default)]
+    agents: Vec<RoutingAgentToml>,
+    #[serde(default)]
+    coordination: RoutingCoordinationToml,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RoutingCoordinationToml {
+    #[serde(default)]
+    routing_cost_epsilon: Option<f32>,
+    #[serde(default)]
+    routing_trace_limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RoutingAgentToml {
+    role: Role,
+    agent: String,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    capabilities: Vec<String>,
+    #[serde(default)]
+    cost_weight: Option<f32>,
+    #[serde(default)]
+    perf_estimate: Option<f32>,
+    #[serde(default)]
+    read_only_auditor: bool,
+    #[serde(default)]
+    frontier: bool,
+}
+
+pub(crate) fn routing_config_from_toml(input: &str) -> Result<RoutingConfig, toml::de::Error> {
+    let decoded = toml::from_str::<RoutingToml>(input)?;
+    Ok(RoutingConfig {
+        profiles: decoded
+            .agents
+            .into_iter()
+            .map(|agent| AgentRoutingProfile {
+                role: agent.role,
+                agent: agent.agent,
+                model: agent.model,
+                capabilities: normalize_capabilities(&agent.capabilities),
+                cost_weight: agent.cost_weight,
+                perf_estimate: agent.perf_estimate,
+                read_only_auditor: agent.read_only_auditor,
+                frontier: agent.frontier,
+            })
+            .collect(),
+        cost_epsilon: decoded
+            .coordination
+            .routing_cost_epsilon
+            .unwrap_or_else(|| RoutingConfig::default().cost_epsilon),
+        trace_limit: decoded
+            .coordination
+            .routing_trace_limit
+            .unwrap_or_else(|| RoutingConfig::default().trace_limit),
+    })
 }
 
 // ── orchestrate.loop ──────────────────────────────────────────────────────────────────────────
@@ -2889,10 +3073,10 @@ Call when the project vision or current phase changes."
             .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
         let binding = AgentBinding {
             role,
-            agent: request.agent,
-            model: Some(request.model),
-            command: request.command,
-            args: request.args.unwrap_or_default(),
+            agent: request.agent.clone(),
+            model: Some(request.model.clone()),
+            command: request.command.clone(),
+            args: request.args.clone().unwrap_or_default(),
             timeout_seconds: request.timeout_seconds,
         };
         let mut bindings = self
@@ -2923,7 +3107,14 @@ Call when the project vision or current phase changes."
             .catalog
             .lock()
             .map_err(|error| ErrorData::internal_error(error.to_string(), None))? = catalog;
-        Ok(Json(BindResponse { binding }))
+        let routing_profile = routing_profile_from_bind_request(role, &binding, &request);
+        if let Some(profile) = routing_profile.clone() {
+            self.upsert_routing_profile(profile)?;
+        }
+        Ok(Json(BindResponse {
+            binding,
+            routing_profile: routing_profile.as_ref().map(RoutingProfileResponse::from),
+        }))
     }
 
     #[tool(
@@ -2959,6 +3150,66 @@ Call when the project vision or current phase changes."
         let role = Role::from_str(&request.role)
             .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
         let binding = self.binding_for_role(role)?;
+        let routing_config = self.routing_config()?;
+        let required_capabilities = request
+            .required_capabilities
+            .as_deref()
+            .map(normalize_capabilities)
+            .unwrap_or_default();
+        let routing_requested = routing_config.is_active() || !required_capabilities.is_empty();
+        let experience = if routing_requested {
+            self.routing_experience(&request.task, &routing_config)
+                .await
+        } else {
+            RoutingExperience::default()
+        };
+        let (tier, _signals) =
+            classify_task_difficulty(&request.task, experience.prior_failure_rate());
+        if routing_requested {
+            if !required_capabilities.is_empty() {
+                let profile = routing_config.profile_for(&binding).ok_or_else(|| {
+                    ErrorData::invalid_params(
+                        format!(
+                            "orchestrate.delegate binding {} has no capability manifest",
+                            binding.agent
+                        ),
+                        None,
+                    )
+                })?;
+                if !covers_capabilities(&profile.effective_capabilities(), &required_capabilities) {
+                    return Err(ErrorData::invalid_params(
+                        format!(
+                            "orchestrate.delegate binding {} does not cover required_capabilities={:?}",
+                            binding.agent, required_capabilities
+                        ),
+                        None,
+                    ));
+                }
+            }
+            if tier == RoutingTier::Trivial {
+                let task_id = format!("direct-{}-{}", role.canonical_alias(), now_id());
+                let summary = format!(
+                    "Trivial task routed to the master; no worker was spawned. Task: {}",
+                    request.task
+                );
+                let result = BoundedText::new(&summary, request.max_output_chars);
+                return Ok(Json(DelegateResponse {
+                    task_id: task_id.clone(),
+                    status: "master-direct".to_string(),
+                    role: "master".to_string(),
+                    agent: "master".to_string(),
+                    model: None,
+                    envelope: worker_envelope(
+                        "master-direct",
+                        &summary,
+                        vec![format!("task:{task_id}")],
+                        request.max_output_chars,
+                    ),
+                    result: Some(result.text),
+                    result_truncated: result.truncated,
+                }));
+            }
+        }
         let catalog = self
             .catalog
             .lock()
@@ -3037,12 +3288,36 @@ Call when the project vision or current phase changes."
                     Some(response.content.clone()),
                 )?;
                 let result = BoundedText::new(&response.content, request.max_output_chars);
+                if routing_requested {
+                    let meta = TeamRunTaskMeta {
+                        order: 0,
+                        task_id: task_id.clone(),
+                        role: role.canonical_alias().to_string(),
+                        agent: binding.agent.clone(),
+                        model: binding.model.clone(),
+                        instruction: request.task.clone(),
+                        tier,
+                        trace_enabled: true,
+                    };
+                    self.store_routing_trace(
+                        &meta,
+                        "pass",
+                        estimate_tokens(&request.task) + estimate_tokens(&response.content),
+                    )
+                    .await;
+                }
                 Ok(Json(DelegateResponse {
-                    task_id,
+                    task_id: task_id.clone(),
                     status: "done".to_string(),
                     role: role.canonical_alias().to_string(),
                     agent: binding.agent,
                     model: binding.model,
+                    envelope: worker_envelope(
+                        "done",
+                        &response.content,
+                        vec![format!("task:{task_id}")],
+                        request.max_output_chars,
+                    ),
                     result: Some(result.text),
                     result_truncated: result.truncated,
                 }))
@@ -3057,7 +3332,22 @@ Call when the project vision or current phase changes."
                     .map_err(|task_error| {
                         ErrorData::internal_error(task_error.to_string(), None)
                     })?;
-                self.record_delegate(task_id, "blocked".to_string(), None)?;
+                self.record_delegate(task_id.clone(), "blocked".to_string(), None)?;
+                if routing_requested {
+                    let error_text = error.to_string();
+                    let meta = TeamRunTaskMeta {
+                        order: 0,
+                        task_id: task_id.clone(),
+                        role: role.canonical_alias().to_string(),
+                        agent: binding.agent.clone(),
+                        model: binding.model.clone(),
+                        instruction: request.task,
+                        tier,
+                        trace_enabled: true,
+                    };
+                    self.store_routing_trace(&meta, "fail", estimate_tokens(&error_text))
+                        .await;
+                }
                 Err(ErrorData::internal_error(error.to_string(), None))
             }
         }
@@ -3091,9 +3381,18 @@ Call when the project vision or current phase changes."
                 (Some(result.text), result.truncated)
             })
             .unwrap_or((None, false));
+        let envelope = result.as_deref().map(|result| {
+            worker_envelope(
+                &record.status,
+                result,
+                vec![format!("task:{}", request.task_id)],
+                request.max_output_chars,
+            )
+        });
         Ok(Json(StatusResponse {
             task_id: request.task_id,
             status: record.status,
+            envelope,
             result,
             result_truncated,
         }))
@@ -3306,40 +3605,86 @@ verified skill + spec + auto-invariants to memory. Brakes: max_turns (default 10
             .lock()
             .map_err(|error| ErrorData::internal_error(error.to_string(), None))?
             .clone();
+        let routing_config = self.routing_config()?;
+        let routing_requested = routing_config.is_active()
+            || request.tasks.iter().any(|task| {
+                task.required_capabilities
+                    .as_ref()
+                    .is_some_and(|capabilities| !capabilities.is_empty())
+            });
 
         let mut resolved = Vec::with_capacity(request.tasks.len());
-        {
-            let runtime = self.team_runtime.lock().await;
-            for (index, task) in request.tasks.iter().enumerate() {
-                let instruction = task.instruction.trim();
-                if instruction.is_empty() {
-                    return Err(ErrorData::invalid_params(
-                        format!("team.run task {} has an empty instruction", index + 1),
-                        None,
-                    ));
-                }
-                let definition =
-                    resolve_team_run_definition(runtime.definitions(), &bindings, task)?;
-                resolved.push(ResolvedTeamRunTask {
-                    definition,
-                    title: task
-                        .title
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|title| !title.is_empty())
-                        .map(str::to_string)
-                        .unwrap_or_else(|| first_line_or_default(instruction)),
-                    instruction: instruction.to_string(),
-                });
+        for (index, task) in request.tasks.iter().enumerate() {
+            let instruction = task.instruction.trim();
+            if instruction.is_empty() {
+                return Err(ErrorData::invalid_params(
+                    format!("team.run task {} has an empty instruction", index + 1),
+                    None,
+                ));
             }
+            let experience = if routing_requested {
+                self.routing_experience(instruction, &routing_config).await
+            } else {
+                RoutingExperience::default()
+            };
+            let title = task
+                .title
+                .as_deref()
+                .map(str::trim)
+                .filter(|title| !title.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| first_line_or_default(instruction));
+            let runtime = self.team_runtime.lock().await;
+            resolved.push(resolve_team_run_task(
+                TeamRunResolveContext {
+                    runtime: &runtime,
+                    bindings: &bindings,
+                    routing: &routing_config,
+                    experience: &experience,
+                    routing_requested,
+                },
+                task,
+                index,
+                title,
+                instruction,
+            )?);
         }
 
-        let team_id = self.ensure_team_run_team(&request, &resolved).await?;
-        let plans = self.prepare_team_run_plans(&team_id, resolved).await?;
-        let task_ids = plans
+        let (direct_tasks, delegated_tasks): (Vec<_>, Vec<_>) = resolved
+            .into_iter()
+            .partition(|task| matches!(task.dispatch, TeamRunDispatch::MasterDirect));
+        let mut ordered_task_ids = vec![String::new(); request.tasks.len()];
+        let mut results = direct_tasks
+            .into_iter()
+            .map(|task| {
+                let task_id = format!("direct-{}-{}", now_id(), task.order + 1);
+                ordered_task_ids[task.order] = task_id.clone();
+                team_run_master_direct_result(task, task_id, max_output_chars)
+            })
+            .collect::<Vec<_>>();
+        let team_id = if delegated_tasks.is_empty() {
+            request
+                .team_id
+                .clone()
+                .unwrap_or_else(|| format!("team-run-{}", now_id()))
+        } else {
+            self.ensure_team_run_team(&request, &delegated_tasks)
+                .await?
+        };
+        let plans = if delegated_tasks.is_empty() {
+            Vec::new()
+        } else {
+            self.prepare_team_run_plans(&team_id, delegated_tasks)
+                .await?
+        };
+        for plan in &plans {
+            ordered_task_ids[plan.meta.order] = plan.meta.task_id.clone();
+        }
+        let await_task_ids = plans
             .iter()
             .map(|plan| plan.meta.task_id.clone())
             .collect::<Vec<_>>();
+        let task_ids = ordered_task_ids;
         if let Some(on_progress) = &on_progress {
             on_progress(
                 0.0,
@@ -3364,7 +3709,7 @@ verified skill + spec + auto-invariants to memory. Brakes: max_turns (default 10
                 }),
             })
             .collect::<Vec<_>>();
-        let mut results = Vec::with_capacity(pending.len());
+        results.reserve(pending.len());
 
         while !pending.is_empty() {
             let current = pending.remove(0);
@@ -3405,12 +3750,24 @@ verified skill + spec + auto-invariants to memory. Brakes: max_turns (default 10
                         abort_team_run_handles(handles).await;
                         self.block_team_run_tasks(&team_id, &blocked).await?;
                         self.cleanup_team_after_atomic_run(&team_id).await?;
+                        for meta in &blocked {
+                            if meta.trace_enabled {
+                                self.store_routing_trace(
+                                    meta,
+                                    "fail",
+                                    estimate_tokens(&meta.instruction)
+                                        + estimate_tokens(&timeout_text.text),
+                                )
+                                .await;
+                            }
+                        }
                         results.extend(blocked.iter().map(|meta| {
                             team_run_error_result(meta, &timeout_text)
                         }));
                         return self.finish_team_run_response(
                             team_id,
                             task_ids,
+                            await_task_ids,
                             "timeout",
                             started,
                             results,
@@ -3442,12 +3799,25 @@ verified skill + spec + auto-invariants to memory. Brakes: max_turns (default 10
                     self.complete_team_run_task(&team_id, &meta.task_id, true)
                         .await?;
                     let output = BoundedText::new(&execution.response, Some(max_output_chars));
+                    let token_count =
+                        estimate_tokens(&meta.instruction) + estimate_tokens(&execution.response);
+                    if meta.trace_enabled {
+                        self.store_routing_trace(&meta, "pass", token_count).await;
+                    }
+                    let artifacts = vec![format!("task:{}", meta.task_id)];
+                    let envelope = worker_envelope(
+                        "done",
+                        &execution.response,
+                        artifacts,
+                        Some(max_output_chars),
+                    );
                     results.push(TeamRunTaskResult {
                         task_id: meta.task_id,
                         status: "done".to_string(),
                         role: meta.role,
                         agent: meta.agent,
                         model: meta.model,
+                        envelope,
                         output: Some(output.text),
                         output_truncated: output.truncated,
                         error: None,
@@ -3458,12 +3828,22 @@ verified skill + spec + auto-invariants to memory. Brakes: max_turns (default 10
                     self.complete_team_run_task(&team_id, &meta.task_id, false)
                         .await?;
                     let error = BoundedText::new(&error.to_string(), Some(max_output_chars));
+                    let token_count =
+                        estimate_tokens(&meta.instruction) + estimate_tokens(&error.text);
+                    if meta.trace_enabled {
+                        self.store_routing_trace(&meta, "fail", token_count).await;
+                    }
                     results.push(team_run_error_result(&meta, &error));
                 }
                 Err(error) => {
                     self.complete_team_run_task(&team_id, &meta.task_id, false)
                         .await?;
                     let error = BoundedText::new(&error.to_string(), Some(max_output_chars));
+                    let token_count =
+                        estimate_tokens(&meta.instruction) + estimate_tokens(&error.text);
+                    if meta.trace_enabled {
+                        self.store_routing_trace(&meta, "fail", token_count).await;
+                    }
                     results.push(team_run_error_result(&meta, &error));
                 }
             }
@@ -3477,6 +3857,7 @@ verified skill + spec + auto-invariants to memory. Brakes: max_turns (default 10
         self.finish_team_run_response(
             team_id,
             task_ids,
+            await_task_ids,
             outcome,
             started,
             results,
@@ -3531,8 +3912,11 @@ verified skill + spec + auto-invariants to memory. Brakes: max_turns (default 10
 
         let mut needed = Vec::<String>::new();
         for task in tasks {
-            if needed.iter().all(|existing| existing != &task.definition) {
-                needed.push(task.definition.clone());
+            let TeamRunDispatch::Delegate { definition } = &task.dispatch else {
+                continue;
+            };
+            if needed.iter().all(|existing| existing != definition) {
+                needed.push(definition.clone());
             }
         }
         let existing = runtime
@@ -3570,14 +3954,18 @@ verified skill + spec + auto-invariants to memory. Brakes: max_turns (default 10
     ) -> Result<Vec<TeamRunPlan>, ErrorData> {
         let mut runtime = self.team_runtime.lock().await;
         let config = runtime.config().clone();
+        let routing = self.routing_config()?;
         let mut plans = Vec::with_capacity(tasks.len());
         for task in tasks {
+            let TeamRunDispatch::Delegate { definition } = task.dispatch else {
+                continue;
+            };
             let task_record = runtime
                 .add_task(TeamTaskAdd {
                     team_id: team_id.to_string(),
                     title: task.title,
                     description: task.instruction.clone(),
-                    definition: Some(task.definition.clone()),
+                    definition: Some(definition.clone()),
                     blockers: Vec::new(),
                 })
                 .await
@@ -3586,24 +3974,37 @@ verified skill + spec + auto-invariants to memory. Brakes: max_turns (default 10
                 .claim_task(TeamTaskClaim {
                     team_id: team_id.to_string(),
                     task_id: Some(task_record.id.clone()),
-                    teammate: task.definition.clone(),
+                    teammate: definition.clone(),
                 })
                 .await
                 .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
             let instruction = format!("Task ID: {}\n\n{}", task_record.id, task.instruction);
             let delegation = runtime
-                .delegation_for_teammate(team_id, &task.definition, &instruction, None)
+                .delegation_for_teammate(team_id, &definition, &instruction, None)
                 .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
             let binding = delegation.binding.clone();
+            let delegation = if routing
+                .profile_for(&binding)
+                .is_some_and(|profile| profile.read_only_auditor)
+            {
+                let allowed_tools = strip_mutating_tools(&delegation.allowed_tools);
+                delegation.with_allowed_tools(allowed_tools)
+            } else {
+                delegation
+            };
             plans.push(TeamRunPlan {
                 team_id: team_id.to_string(),
-                teammate: task.definition.clone(),
+                teammate: definition,
                 config: config.clone(),
                 meta: TeamRunTaskMeta {
+                    order: task.order,
                     task_id: task_record.id,
                     role: binding.role.canonical_alias().to_string(),
                     agent: binding.agent,
                     model: binding.model,
+                    instruction: task.instruction,
+                    tier: task.tier,
+                    trace_enabled: routing.is_active() || !task.required_capabilities.is_empty(),
                 },
                 delegation,
             });
@@ -3648,11 +4049,98 @@ verified skill + spec + auto-invariants to memory. Brakes: max_turns (default 10
         Ok(())
     }
 
+    async fn routing_experience(
+        &self,
+        instruction: &str,
+        _routing: &RoutingConfig,
+    ) -> RoutingExperience {
+        let mut query = MemoryQuery::new(instruction).with_limit(10);
+        query.tags = vec![ROUTING_TRACE_TAG.to_string()];
+        query.project = self.project.clone();
+        let Ok(hits) = self.backend.find(query).await else {
+            return RoutingExperience::default();
+        };
+        let mut experience = RoutingExperience::default();
+        for hit in hits {
+            if !high_confidence_routing_hit(&hit) {
+                continue;
+            }
+            experience.high_confidence = true;
+            experience.similar_total += 1;
+            let outcome = hit
+                .record
+                .metadata
+                .get("verify_outcome")
+                .map(String::as_str)
+                .unwrap_or("unknown");
+            if outcome != "pass" {
+                experience.similar_failures += 1;
+            }
+            if let Some(agent) = hit.record.metadata.get("chosen_agent") {
+                let stats = experience.agent_stats.entry(agent.clone()).or_default();
+                if outcome == "pass" {
+                    stats.successes += 1;
+                } else {
+                    stats.failures += 1;
+                }
+            }
+        }
+        experience
+    }
+
+    async fn store_routing_trace(&self, meta: &TeamRunTaskMeta, outcome: &str, token_cost: usize) {
+        let Ok(routing) = self.routing_config() else {
+            return;
+        };
+        if routing_trace_limit_reached(
+            self.backend.as_ref(),
+            self.project.clone(),
+            routing.effective_trace_limit(),
+        )
+        .await
+        {
+            return;
+        }
+        let timestamp = chrono::Utc::now();
+        let mut metadata = BTreeMap::new();
+        metadata.insert("chosen_agent".to_string(), meta.agent.clone());
+        metadata.insert("role".to_string(), meta.role.clone());
+        if let Some(model) = &meta.model {
+            metadata.insert("model".to_string(), model.clone());
+        }
+        metadata.insert("tier".to_string(), meta.tier.as_str().to_string());
+        metadata.insert("qualify_outcome".to_string(), "pass".to_string());
+        metadata.insert("verify_outcome".to_string(), outcome.to_string());
+        metadata.insert("token_cost".to_string(), token_cost.to_string());
+        metadata.insert("timestamp".to_string(), timestamp.to_rfc3339());
+        let _ = self
+            .backend
+            .store(StoreMemory {
+                content: meta.instruction.clone(),
+                tags: vec![ROUTING_TRACE_TAG.to_string()],
+                metadata,
+                tier: MemoryTier::L1Atom,
+                node_id: Some(routing_trace_node_id(&meta.instruction, &meta.agent)),
+                created_at: Some(timestamp),
+                scope: Some(MemoryScope::Task),
+                agent_id: Some(meta.agent.clone()),
+                session_id: None,
+                task_id: Some(meta.task_id.clone()),
+                user_id: None,
+                project: self.project.clone(),
+                source: Some("flume-routing".to_string()),
+                confidence: Some(if outcome == "pass" { 1.0 } else { 0.6 }),
+                relations: Vec::new(),
+            })
+            .await;
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn finish_team_run_response(
         &self,
         team_id: String,
         task_ids: Vec<String>,
+        await_task_ids: Vec<String>,
         outcome: &str,
         started: std::time::Instant,
         mut results: Vec<TeamRunTaskResult>,
@@ -3668,12 +4156,14 @@ verified skill + spec + auto-invariants to memory. Brakes: max_turns (default 10
                 .position(|task_id| task_id == &result.task_id)
                 .unwrap_or(usize::MAX)
         });
-        let awaited = self
-            .team_task_await_inner(
+        let await_outcome = if await_task_ids.is_empty() {
+            "completed".to_string()
+        } else {
+            self.team_task_await_inner(
                 TeamTaskAwaitRequest {
                     team_id: team_id.clone(),
                     task_id: None,
-                    task_ids: task_ids.clone(),
+                    task_ids: await_task_ids,
                     timeout_secs,
                     poll_interval_ms,
                     max_output_chars,
@@ -3682,14 +4172,16 @@ verified skill + spec + auto-invariants to memory. Brakes: max_turns (default 10
                 on_progress,
             )
             .await?
-            .0;
+            .0
+            .outcome
+        };
         Ok(Json(TeamRunResponse {
             team_id,
             outcome: outcome.to_string(),
             elapsed_ms: started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
             task_ids,
             results,
-            await_outcome: awaited.outcome,
+            await_outcome,
         }))
     }
 
@@ -4509,9 +5001,17 @@ pub async fn run_stdio_with_config_and_router(
 }
 
 pub async fn run_stdio_with_artesian_config(config: ArtesianConfig) -> anyhow::Result<()> {
+    run_stdio_with_artesian_config_and_routing(config, RoutingConfig::default()).await
+}
+
+pub async fn run_stdio_with_artesian_config_and_routing(
+    config: ArtesianConfig,
+    routing: RoutingConfig,
+) -> anyhow::Result<()> {
     let router_enabled = config.coordination.router_enabled;
     let server = MemoryServer::from_artesian_config(&config)
         .await?
+        .with_routing_config(routing)
         .with_router_enabled(router_enabled);
     server.serve(stdio()).await?.waiting().await?;
     Ok(())
@@ -4522,6 +5022,15 @@ pub async fn run_stdio_with_artesian_config(config: ArtesianConfig) -> anyhow::R
 /// server built from `config`. Bind to a trusted interface only (no auth is enforced here).
 #[cfg(feature = "http")]
 pub async fn run_http(config: ArtesianConfig, bind: std::net::SocketAddr) -> anyhow::Result<()> {
+    run_http_with_routing(config, RoutingConfig::default(), bind).await
+}
+
+#[cfg(feature = "http")]
+pub async fn run_http_with_routing(
+    config: ArtesianConfig,
+    routing: RoutingConfig,
+    bind: std::net::SocketAddr,
+) -> anyhow::Result<()> {
     use rmcp::transport::streamable_http_server::{
         session::local::LocalSessionManager, StreamableHttpService,
     };
@@ -4530,7 +5039,11 @@ pub async fn run_http(config: ArtesianConfig, bind: std::net::SocketAddr) -> any
     let service = StreamableHttpService::new(
         move || {
             MemoryServer::from_config(&memory_config)
-                .map(|server| server.with_router_enabled(router_enabled))
+                .map(|server| {
+                    server
+                        .with_routing_config(routing.clone())
+                        .with_router_enabled(router_enabled)
+                })
                 .map_err(std::io::Error::other)
         },
         std::sync::Arc::new(LocalSessionManager::default()),
@@ -4833,6 +5346,313 @@ fn output_char_limit(max_output_chars: Option<usize>) -> usize {
         .clamp(1, TEAM_OUTPUT_HARD_MAX_CHARS)
 }
 
+fn routing_profile_from_bind_request(
+    role: Role,
+    binding: &AgentBinding,
+    request: &BindRequest,
+) -> Option<AgentRoutingProfile> {
+    let declared = request
+        .capabilities
+        .as_ref()
+        .is_some_and(|capabilities| !capabilities.is_empty())
+        || request.cost_weight.is_some()
+        || request.perf_estimate.is_some()
+        || request.read_only_auditor.unwrap_or(false)
+        || request.frontier.unwrap_or(false);
+    declared.then(|| AgentRoutingProfile {
+        role,
+        agent: binding.agent.clone(),
+        model: binding.model.clone(),
+        capabilities: request
+            .capabilities
+            .as_deref()
+            .map(normalize_capabilities)
+            .unwrap_or_default(),
+        cost_weight: request.cost_weight,
+        perf_estimate: request.perf_estimate,
+        read_only_auditor: request.read_only_auditor.unwrap_or(false),
+        frontier: request.frontier.unwrap_or(false),
+    })
+}
+
+#[derive(Debug, Default, Clone)]
+struct RoutingExperience {
+    high_confidence: bool,
+    similar_total: usize,
+    similar_failures: usize,
+    agent_stats: HashMap<String, RoutingAgentStats>,
+}
+
+impl RoutingExperience {
+    fn prior_failure_rate(&self) -> f32 {
+        if self.similar_total == 0 {
+            0.0
+        } else {
+            self.similar_failures as f32 / self.similar_total as f32
+        }
+    }
+
+    fn bias_for(&self, agent: &str) -> f32 {
+        if !self.high_confidence {
+            return 0.0;
+        }
+        self.agent_stats.get(agent).map_or(0.0, |stats| {
+            let total = stats.successes + stats.failures;
+            if total == 0 {
+                0.0
+            } else {
+                (stats.successes as f32 - stats.failures as f32) / total as f32
+            }
+        })
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+struct RoutingAgentStats {
+    successes: usize,
+    failures: usize,
+}
+
+struct TeamRunCandidate<'a> {
+    definition: &'a flume::RoleDefinition,
+    binding: AgentBinding,
+    profile: Option<&'a AgentRoutingProfile>,
+}
+
+struct TeamRunResolveContext<'a> {
+    runtime: &'a TeamRuntime,
+    bindings: &'a [AgentBinding],
+    routing: &'a RoutingConfig,
+    experience: &'a RoutingExperience,
+    routing_requested: bool,
+}
+
+fn resolve_team_run_task(
+    context: TeamRunResolveContext<'_>,
+    task: &TeamRunTaskRequest,
+    order: usize,
+    title: String,
+    instruction: &str,
+) -> Result<ResolvedTeamRunTask, ErrorData> {
+    let required_capabilities = task
+        .required_capabilities
+        .as_deref()
+        .map(normalize_capabilities)
+        .unwrap_or_default();
+    if !context.routing_requested {
+        return Ok(ResolvedTeamRunTask {
+            order,
+            dispatch: TeamRunDispatch::Delegate {
+                definition: resolve_team_run_definition(
+                    context.runtime.definitions(),
+                    context.bindings,
+                    task,
+                )?,
+            },
+            title,
+            instruction: instruction.to_string(),
+            tier: RoutingTier::Standard,
+            required_capabilities,
+        });
+    }
+
+    let (tier, _signals) =
+        classify_task_difficulty(instruction, context.experience.prior_failure_rate());
+    if tier == RoutingTier::Trivial {
+        return Ok(ResolvedTeamRunTask {
+            order,
+            dispatch: TeamRunDispatch::MasterDirect,
+            title,
+            instruction: instruction.to_string(),
+            tier,
+            required_capabilities,
+        });
+    }
+
+    let candidates = routing_candidates(
+        context.runtime,
+        context.bindings,
+        task,
+        context.routing,
+        &required_capabilities,
+    )?;
+    let selected =
+        select_routing_candidate(&candidates, context.routing, context.experience, tier)?;
+    Ok(ResolvedTeamRunTask {
+        order,
+        dispatch: TeamRunDispatch::Delegate {
+            definition: selected.definition.name.clone(),
+        },
+        title,
+        instruction: instruction.to_string(),
+        tier,
+        required_capabilities,
+    })
+}
+
+fn routing_candidates<'a>(
+    runtime: &'a TeamRuntime,
+    bindings: &[AgentBinding],
+    task: &TeamRunTaskRequest,
+    routing: &'a RoutingConfig,
+    required_capabilities: &[String],
+) -> Result<Vec<TeamRunCandidate<'a>>, ErrorData> {
+    let definitions = matching_team_run_definitions(runtime.definitions(), bindings, task)?;
+    let mut candidates = Vec::new();
+    for definition in definitions {
+        let binding = runtime
+            .resolve_binding_for_definition(definition)
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        let profile = routing.profile_for(&binding);
+        if !required_capabilities.is_empty() {
+            let Some(profile) = profile else { continue };
+            if !covers_capabilities(&profile.effective_capabilities(), required_capabilities) {
+                continue;
+            }
+        }
+        candidates.push(TeamRunCandidate {
+            definition,
+            binding,
+            profile,
+        });
+    }
+    if candidates.is_empty() {
+        return Err(ErrorData::invalid_params(
+            format!(
+                "team.run found no capable role definition matching role={:?} agent={:?} required_capabilities={:?}",
+                task.role, task.agent, required_capabilities
+            ),
+            None,
+        ));
+    }
+    Ok(candidates)
+}
+
+fn select_routing_candidate<'a>(
+    candidates: &'a [TeamRunCandidate<'a>],
+    routing: &RoutingConfig,
+    experience: &RoutingExperience,
+    tier: RoutingTier,
+) -> Result<&'a TeamRunCandidate<'a>, ErrorData> {
+    let frontier_available = tier == RoutingTier::Hard
+        && candidates
+            .iter()
+            .any(|candidate| candidate.profile.is_some_and(|profile| profile.frontier));
+    candidates
+        .iter()
+        .filter(|candidate| {
+            !frontier_available || candidate.profile.is_some_and(|profile| profile.frontier)
+        })
+        .max_by(|left, right| {
+            candidate_score(left, routing, experience)
+                .total_cmp(&candidate_score(right, routing, experience))
+                .then_with(|| right.definition.name.cmp(&left.definition.name))
+        })
+        .ok_or_else(|| {
+            ErrorData::internal_error("routing candidate set was empty".to_string(), None)
+        })
+}
+
+fn candidate_score(
+    candidate: &TeamRunCandidate<'_>,
+    routing: &RoutingConfig,
+    experience: &RoutingExperience,
+) -> f32 {
+    let perf = candidate
+        .profile
+        .map_or(1.0, AgentRoutingProfile::perf_estimate);
+    let cost = candidate
+        .profile
+        .map_or(1.0, AgentRoutingProfile::cost_weight);
+    perf + experience.bias_for(&candidate.binding.agent) - routing.cost_epsilon * cost
+}
+
+fn high_confidence_routing_hit(hit: &SearchHit) -> bool {
+    match hit.source {
+        aquifer::SearchSource::Keyword => hit.score >= 2.0,
+        aquifer::SearchSource::Vector | aquifer::SearchSource::Hybrid => hit.score >= 0.70,
+    }
+}
+
+async fn routing_trace_limit_reached(
+    backend: &dyn MemoryBackend,
+    project: Option<String>,
+    trace_limit: usize,
+) -> bool {
+    let mut query = MemoryQuery::new(ROUTING_TRACE_TAG).with_limit(trace_limit.saturating_add(1));
+    query.tags = vec![ROUTING_TRACE_TAG.to_string()];
+    query.project = project;
+    backend
+        .find(query)
+        .await
+        .is_ok_and(|hits| hits.len() >= trace_limit)
+}
+
+fn routing_trace_node_id(instruction: &str, agent: &str) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    instruction.hash(&mut hasher);
+    agent.hash(&mut hasher);
+    format!("node:routing-trace:{:016x}", hasher.finish())
+}
+
+fn matching_team_run_definitions<'a>(
+    definitions: &'a [flume::RoleDefinition],
+    bindings: &[AgentBinding],
+    task: &TeamRunTaskRequest,
+) -> Result<Vec<&'a flume::RoleDefinition>, ErrorData> {
+    if definitions.is_empty() {
+        return Err(ErrorData::invalid_params(
+            "team.run requires at least one .agent/agents or .claude/agents role definition"
+                .to_string(),
+            None,
+        ));
+    }
+    let requested_role = task
+        .role
+        .as_deref()
+        .map(str::trim)
+        .filter(|role| !role.is_empty());
+    let requested_agent = task
+        .agent
+        .as_deref()
+        .map(str::trim)
+        .filter(|agent| !agent.is_empty());
+    let parsed_role = requested_role
+        .filter(|role| {
+            definitions
+                .iter()
+                .all(|definition| definition.name != *role)
+        })
+        .map(Role::from_str)
+        .transpose()
+        .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
+    let matches = definitions
+        .iter()
+        .filter(|definition| {
+            if requested_role.is_none() {
+                definition.kind == Role::Worker
+            } else {
+                requested_role.is_none_or(|role| definition.name == role)
+                    || parsed_role.is_some_and(|role| definition.kind == role)
+            }
+        })
+        .filter(|definition| {
+            requested_agent
+                .is_none_or(|agent| definition_matches_agent(definition, bindings, agent))
+        })
+        .collect::<Vec<_>>();
+    if matches.is_empty() {
+        return Err(ErrorData::invalid_params(
+            format!(
+                "team.run found no role definition matching role={:?} agent={:?}",
+                requested_role, requested_agent
+            ),
+            None,
+        ));
+    }
+    Ok(matches)
+}
+
 fn resolve_team_run_definition(
     definitions: &[flume::RoleDefinition],
     bindings: &[AgentBinding],
@@ -4915,6 +5735,50 @@ fn definition_matches_agent(
                 .any(|binding| binding.role == definition.kind && binding.agent == agent))
 }
 
+fn worker_envelope(
+    status: &str,
+    output: &str,
+    artifacts: Vec<String>,
+    max_output_chars: Option<usize>,
+) -> WorkerOutputEnvelope {
+    let summary = BoundedText::new(output, max_output_chars);
+    WorkerOutputEnvelope {
+        status: status.to_string(),
+        token_count: estimate_tokens(output),
+        summary: summary.text,
+        artifacts,
+    }
+}
+
+fn team_run_master_direct_result(
+    task: ResolvedTeamRunTask,
+    task_id: String,
+    max_output_chars: usize,
+) -> TeamRunTaskResult {
+    let summary = format!(
+        "Trivial task routed to the master; no worker was spawned. Task: {}",
+        task.instruction
+    );
+    let output = BoundedText::new(&summary, Some(max_output_chars));
+    TeamRunTaskResult {
+        task_id: task_id.clone(),
+        status: "master-direct".to_string(),
+        role: "master".to_string(),
+        agent: "master".to_string(),
+        model: None,
+        envelope: worker_envelope(
+            "master-direct",
+            &summary,
+            vec![format!("task:{task_id}")],
+            Some(max_output_chars),
+        ),
+        output: Some(output.text),
+        output_truncated: output.truncated,
+        error: None,
+        error_truncated: false,
+    }
+}
+
 async fn abort_team_run_handles(
     handles: Vec<tokio::task::JoinHandle<flume::FlumeResult<flume::TeamExecution>>>,
 ) {
@@ -4931,6 +5795,12 @@ fn team_run_error_result(meta: &TeamRunTaskMeta, error: &BoundedText) -> TeamRun
         role: meta.role.clone(),
         agent: meta.agent.clone(),
         model: meta.model.clone(),
+        envelope: worker_envelope(
+            "blocked",
+            &error.text,
+            vec![format!("task:{}", meta.task_id)],
+            Some(error.text.chars().count()),
+        ),
         output: None,
         output_truncated: false,
         error: Some(error.text.clone()),
@@ -4982,6 +5852,33 @@ fn await_response(
         .into_iter()
         .map(|task| bounded_task_value(task, max_output_chars))
         .collect::<Result<Vec<_>, _>>()?;
+    let envelopes = tasks
+        .iter()
+        .map(|task| {
+            let status = task
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(outcome);
+            let summary = task
+                .get("description")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            let task_id = task
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| task.get("task_id").and_then(serde_json::Value::as_str))
+                .unwrap_or("");
+            worker_envelope(
+                status,
+                summary,
+                (!task_id.is_empty())
+                    .then(|| format!("task:{task_id}"))
+                    .into_iter()
+                    .collect(),
+                max_output_chars,
+            )
+        })
+        .collect::<Vec<_>>();
     let tasks_truncated = tasks.iter().any(|task| {
         task.get("description_truncated")
             .and_then(serde_json::Value::as_bool)
@@ -4994,6 +5891,7 @@ fn await_response(
         elapsed_ms,
         tasks_truncated,
         tasks,
+        envelopes,
     }))
 }
 

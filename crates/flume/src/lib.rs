@@ -67,6 +67,278 @@ pub struct DelegationSessionContext {
     pub task_id: Option<String>,
 }
 
+/// Routing trace tag used for ordinary memory records that capture prior delegation outcomes.
+pub const ROUTING_TRACE_TAG: &str = "routing-trace";
+
+const DEFAULT_ROUTING_COST_EPSILON: f32 = 0.1;
+const DEFAULT_ROUTING_TRACE_LIMIT: usize = 1_000;
+const MUTATING_CAPABILITIES: &[&str] = &["bash", "edit", "execute", "shell", "write"];
+
+/// Cheap rule-based routing tier.  This is intentionally deterministic and makes no LLM calls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RoutingTier {
+    Trivial,
+    Standard,
+    Hard,
+}
+
+impl RoutingTier {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Trivial => "trivial",
+            Self::Standard => "standard",
+            Self::Hard => "hard",
+        }
+    }
+}
+
+/// Operator-tunable routing metadata for one role/agent binding.
+///
+/// This sits beside [`AgentBinding`] so older configs and callers that only know about the core
+/// binding type keep working unchanged.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentRoutingProfile {
+    pub role: Role,
+    pub agent: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_weight: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub perf_estimate: Option<f32>,
+    #[serde(default)]
+    pub read_only_auditor: bool,
+    #[serde(default)]
+    pub frontier: bool,
+}
+
+impl AgentRoutingProfile {
+    pub fn effective_capabilities(&self) -> Vec<String> {
+        let capabilities = normalize_capabilities(&self.capabilities);
+        if self.read_only_auditor {
+            strip_mutating_capabilities(&capabilities)
+        } else {
+            capabilities
+        }
+    }
+
+    pub fn cost_weight(&self) -> f32 {
+        self.cost_weight.unwrap_or(1.0).max(0.0)
+    }
+
+    pub fn perf_estimate(&self) -> f32 {
+        self.perf_estimate.unwrap_or(1.0).clamp(0.0, 1.0)
+    }
+
+    fn is_declared(&self) -> bool {
+        !self.capabilities.is_empty()
+            || self.cost_weight.is_some()
+            || self.perf_estimate.is_some()
+            || self.read_only_auditor
+            || self.frontier
+    }
+}
+
+/// Flume routing configuration.  Defaults are inert: without declared profile metadata, dispatch
+/// preserves the legacy role-definition choice.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RoutingConfig {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub profiles: Vec<AgentRoutingProfile>,
+    #[serde(default = "default_routing_cost_epsilon")]
+    pub cost_epsilon: f32,
+    #[serde(default = "default_routing_trace_limit")]
+    pub trace_limit: usize,
+}
+
+impl Default for RoutingConfig {
+    fn default() -> Self {
+        Self {
+            profiles: Vec::new(),
+            cost_epsilon: DEFAULT_ROUTING_COST_EPSILON,
+            trace_limit: DEFAULT_ROUTING_TRACE_LIMIT,
+        }
+    }
+}
+
+impl RoutingConfig {
+    pub fn is_active(&self) -> bool {
+        self.profiles.iter().any(AgentRoutingProfile::is_declared)
+    }
+
+    pub fn profile_for(&self, binding: &AgentBinding) -> Option<&AgentRoutingProfile> {
+        self.profiles
+            .iter()
+            .filter(|profile| profile.role == binding.role && profile.agent == binding.agent)
+            .find(|profile| {
+                profile.model.is_none()
+                    || binding.model.is_none()
+                    || profile.model.as_deref() == binding.model.as_deref()
+            })
+    }
+
+    pub fn effective_trace_limit(&self) -> usize {
+        self.trace_limit.max(1)
+    }
+}
+
+fn default_routing_cost_epsilon() -> f32 {
+    DEFAULT_ROUTING_COST_EPSILON
+}
+
+fn default_routing_trace_limit() -> usize {
+    DEFAULT_ROUTING_TRACE_LIMIT
+}
+
+/// Signals used by the rule-based difficulty gate.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DifficultySignals {
+    pub estimated_tokens: usize,
+    pub subgoal_count: usize,
+    pub prior_failure_rate: f32,
+    pub high_stakes: bool,
+}
+
+pub fn classify_task_difficulty(
+    task: &str,
+    prior_failure_rate: f32,
+) -> (RoutingTier, DifficultySignals) {
+    let estimated_tokens = estimate_task_tokens(task);
+    let subgoal_count = estimate_subgoal_count(task);
+    let high_stakes = has_high_stakes_terms(task);
+    let prior_failure_rate = prior_failure_rate.clamp(0.0, 1.0);
+    let tier =
+        if !high_stakes && estimated_tokens <= 64 && subgoal_count <= 1 && prior_failure_rate < 0.2
+        {
+            RoutingTier::Trivial
+        } else if high_stakes
+            || estimated_tokens >= 600
+            || subgoal_count >= 4
+            || prior_failure_rate >= 0.5
+        {
+            RoutingTier::Hard
+        } else {
+            RoutingTier::Standard
+        };
+    (
+        tier,
+        DifficultySignals {
+            estimated_tokens,
+            subgoal_count,
+            prior_failure_rate,
+            high_stakes,
+        },
+    )
+}
+
+pub fn normalize_capabilities(capabilities: &[String]) -> Vec<String> {
+    let mut normalized = capabilities
+        .iter()
+        .map(|capability| normalize_capability(capability))
+        .filter(|capability| !capability.is_empty())
+        .collect::<Vec<_>>();
+    normalized.sort();
+    normalized.dedup();
+    normalized
+}
+
+pub fn normalize_capability(capability: &str) -> String {
+    capability.trim().to_ascii_lowercase()
+}
+
+pub fn covers_capabilities(manifest: &[String], required: &[String]) -> bool {
+    if required.is_empty() {
+        return true;
+    }
+    let manifest = normalize_capabilities(manifest);
+    let required = normalize_capabilities(required);
+    required
+        .iter()
+        .all(|capability| manifest.iter().any(|item| item == capability))
+}
+
+pub fn strip_mutating_capabilities(capabilities: &[String]) -> Vec<String> {
+    capabilities
+        .iter()
+        .filter(|capability| !is_mutating_capability(capability))
+        .cloned()
+        .collect()
+}
+
+pub fn strip_mutating_tools(tools: &[String]) -> Vec<String> {
+    tools
+        .iter()
+        .filter(|tool| !is_mutating_tool(tool))
+        .cloned()
+        .collect()
+}
+
+fn is_mutating_capability(capability: &str) -> bool {
+    let capability = normalize_capability(capability);
+    MUTATING_CAPABILITIES
+        .iter()
+        .any(|mutating| capability == *mutating)
+}
+
+fn is_mutating_tool(tool: &str) -> bool {
+    let tool = normalize_capability(tool);
+    MUTATING_CAPABILITIES
+        .iter()
+        .any(|mutating| tool == *mutating || tool.contains(mutating))
+}
+
+fn estimate_task_tokens(task: &str) -> usize {
+    let by_chars = task.chars().count().div_ceil(4);
+    let by_words = task.split_whitespace().count();
+    by_chars.max(by_words).max(1)
+}
+
+fn estimate_subgoal_count(task: &str) -> usize {
+    let lower = task.to_ascii_lowercase();
+    let marker_count = [" and ", " then ", " plus ", " also ", ";"]
+        .iter()
+        .map(|marker| lower.matches(marker).count())
+        .sum::<usize>();
+    let listed_count = task
+        .lines()
+        .map(str::trim_start)
+        .filter(|line| {
+            line.starts_with("- ")
+                || line.starts_with("* ")
+                || line
+                    .chars()
+                    .next()
+                    .is_some_and(|first| first.is_ascii_digit())
+                    && line.contains('.')
+        })
+        .count();
+    marker_count.max(listed_count.saturating_sub(1))
+}
+
+fn has_high_stakes_terms(task: &str) -> bool {
+    let lower = task.to_ascii_lowercase();
+    [
+        "auth",
+        "credential",
+        "delete",
+        "deploy",
+        "financial",
+        "legal",
+        "medical",
+        "migration",
+        "payment",
+        "production",
+        "release",
+        "secret",
+        "security",
+    ]
+    .iter()
+    .any(|term| lower.contains(term))
+}
+
 impl Delegation {
     /// Build a delegation from a resolved binding and a full composed prompt, with no session
     /// scoping and tools inherited from the definition.
@@ -994,6 +1266,24 @@ impl TeamRuntime {
             delegation = delegation.with_resume_packet(packet);
         }
         Ok(delegation)
+    }
+
+    /// Resolve the concrete agent/model binding for a role definition using the same rules as
+    /// `spawn_teammate`: explicit definition agent first, then the role binding fallback.
+    pub fn resolve_binding_for_definition(
+        &self,
+        definition: &RoleDefinition,
+    ) -> FlumeResult<AgentBinding> {
+        self.binding_for_definition(definition)
+    }
+
+    /// Resolve a definition by name and then resolve its concrete binding.
+    pub fn resolve_binding_for_definition_name(
+        &self,
+        definition_name: &str,
+    ) -> FlumeResult<AgentBinding> {
+        let definition = self.definition(definition_name)?;
+        self.binding_for_definition(definition)
     }
 
     /// Execute a fully-specified [`Delegation`] (the canonical spawn + send path for all three
@@ -2021,5 +2311,42 @@ mod tests {
         };
         let delegation = Delegation::from_definition(&def, binding, "just the task");
         assert_eq!(delegation.instruction, "just the task");
+    }
+
+    #[test]
+    fn routing_rules_classify_and_strip_read_only_auditor_capabilities() {
+        let (trivial, trivial_signals) = classify_task_difficulty("Say ok", 0.0);
+        assert_eq!(trivial, RoutingTier::Trivial);
+        assert!(trivial_signals.estimated_tokens <= 64);
+
+        let (hard, hard_signals) =
+            classify_task_difficulty("Production security migration with auth rollout", 0.0);
+        assert_eq!(hard, RoutingTier::Hard);
+        assert!(hard_signals.high_stakes);
+
+        let profile = AgentRoutingProfile {
+            role: Role::Judge,
+            agent: "auditor".to_string(),
+            model: None,
+            capabilities: vec![
+                "read".to_string(),
+                "write".to_string(),
+                "bash".to_string(),
+                "reason".to_string(),
+            ],
+            cost_weight: None,
+            perf_estimate: None,
+            read_only_auditor: true,
+            frontier: false,
+        };
+        assert_eq!(profile.effective_capabilities(), vec!["read", "reason"]);
+        assert!(!covers_capabilities(
+            &profile.effective_capabilities(),
+            &["write".to_string()]
+        ));
+        assert_eq!(
+            strip_mutating_tools(&["read".to_string(), "bash".to_string(), "edit".to_string()]),
+            vec!["read"]
+        );
     }
 }
